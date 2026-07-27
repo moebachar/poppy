@@ -89,3 +89,13 @@ Step-by-step live session (one-step protocol). Chronology + evidence:
 Artifacts: `hardware/motor_status.md` (all verdicts) · scanner patched to ignore USB2AX's virtual ID 253.
 
 **Remaining to close Phase 2 fully:** physical swap of 54 (needs PH0/PH1) → software rename of the spare (ID 1→54, baud→1 M, return-delay 0) → 13/13 rescan. Proper zero-calibration + EEPROM-limit audit of the replacement lands with Phase 3 (poppy-configure on the Pi era).
+
+---
+
+## 2026-07-27 — Session 3 (continued) — Stiffness saga solved · robot STANDS · pose record/replay
+
+- Operator: full-body stiffness "did not work" twice. Investigation detours (both preserved as lessons): (a) multi-id broadcast writes suspected mangled → switched to **per-motor writes, kept as house rule** (cheap, provably delivered); (b) PID gains suspected soft → false alarm: pypot returns unit-converted gains, raw P=32 = factory default.
+- **Real cause: UX/timing.** The holds auto-released after 45 s; the operator push-tested after release, both times. Standing lesson: every stiffness claim must carry a live `is_torque_enabled` read-back AND overlap the human verification window.
+- `03_stand_still.py`: long hold (minutes-scale) with torque read-back, 30 s status prints, temp watchdog (52 °C hard release). Verified live: 12/12 stiff, operator confirmed **RIGID by push test**. ⭐ The robot stands.
+- "Stand from any messy position": config-math absolute posing **rejected for now** — 2013 offsets untrustworthy until calibration (horn re-indexing risk). Chosen instead: **sculpt-by-hand → record → replay**: `04_pose.py save/goto/release`, stance stored in `scripts/motion/poses/stand.json` (12 joints). `goto` = freeze-at-current, then slow travel (20 °/s), 100° max-travel guard, always releases via finally.
+- Robot ended the day holding the operator-sculpted stance (30-min supervised window). Wave demo (02, elbow-only) functional; the shoulder-roll "invisible motion" was geometry (arm-axis twist), not a fault.
