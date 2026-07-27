@@ -32,6 +32,7 @@ def scan_baud(port, baud, max_id):
     try:
         with pypot.dynamixel.DxlIO(port, baudrate=baud) as dxl:
             present = dxl.scan(list(range(max_id + 1)))
+            present = [i for i in present if i < 250]  # 253 = USB2AX itself, not a motor
             for mid in present:
                 info = {}
                 for key, getter in [

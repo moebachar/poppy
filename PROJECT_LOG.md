@@ -69,3 +69,23 @@ Append-only. Newest entry at the BOTTOM. Every session, hardware finding, patch,
 - `.venv` Python 3.13 + **pypot 5.0.2 — import OK** (no 3.9 fallback needed 🎉).
 - Scripts ready: `scripts/diagnostics/scan_bus.py` (read-only multi-baud scanner vs map), `scripts/motion/00_read_only.py`, `scripts/motion/01_single_joint.py` (voltage/temp guards, EEPROM-limit clamps, always ends compliant).
 - Dynamixel Wizard 2.0: robotis.com refuses CLI download (404/site shell) → Jalaleddin downloads by browser (emanual → Windows X64, no=1670); fake `.exe` (HTML) deleted from Downloads. Wizard is comfort/rescue tooling — pypot suffices for today.
+- **Protocol amendment 2 (operator request): ONE step at a time during hands-on work** — each instruction is a single action + expected outcome; next step decided from the reported result. No multi-step runbooks in chat (plans live in this log instead). *(Note: this line first landed in a stray `hardware/photos/phase1/PROJECT_LOG.md` due to a shell cwd drift — stray deleted, lesson: absolute paths only.)*
+
+---
+
+## 2026-07-27 — Session 3 (bench, live) — Phase 2 essentially DONE · ⭐ FIRST ROBOT MOTION in ~12 years ⭐
+
+Step-by-step live session (one-step protocol). Chronology + evidence:
+
+1. USB2AX plugged into laptop → **genuine Xevelabs USB2AX** (VID 16D0 PID 06A7) on **COM7**; pypot sees it.
+2. PSU label `OUTPUT: +12V ⎓ 5A`; multimeter **+12.26 V center-positive** → the one authorized bus PSU.
+3. Bench chain (per reference photo): USB2AX → injector → motor. First test motor (the loose MX-28AT from the table) never blinked → probably a long-dead spare. Swapped for the **boxed MX-28AT**: boot blink OK → **factory ID 1 @ 57600, fw 41** → commanded moves (15°/25° @ ≤20 °/s) OK. **Full toolchain proven before touching the robot.**
+4. Robot chain first power-up: **12 of 13 motors boot-blink**; non-blinker = end of right arm. Operator isolation-tested it (injector fed directly into it): still no boot, neighbors fine.
+5. Whole-chain scans garbled at both bauds (garbage byte on every ping) **while the dead motor was connected**; unplugging it restored a perfectly clean bus → the dead unit actively corrupts the data line (transceiver failure).
+6. Clean scan: **12/12 at 1 Mbps, IDs exactly per the official map** (33–35, 36–37 AX-12, 41–44, 51–53). **Missing: 54 = r_elbow_y → the single true "burned motor".** Twelve years of rumor reduced to one unit; as-found config = current docs, zero legacy deviation.
+7. Replacement surgery started (friend + operator) — blocked: need a **precision Phillips PH0/PH1**. Dead 54 to be labeled and kept (firmware-recovery candidate; gear donor).
+8. **FIRST MOTION:** robot upright on suction base, left elbow ID 44: 12° then 20° slow bends (15 °/s), ends compliant, ≤29 °C, visually confirmed by operator. **Day goal achieved.**
+
+Artifacts: `hardware/motor_status.md` (all verdicts) · scanner patched to ignore USB2AX's virtual ID 253.
+
+**Remaining to close Phase 2 fully:** physical swap of 54 (needs PH0/PH1) → software rename of the spare (ID 1→54, baud→1 M, return-delay 0) → 13/13 rescan. Proper zero-calibration + EEPROM-limit audit of the replacement lands with Phase 3 (poppy-configure on the Pi era).
