@@ -1,0 +1,18 @@
+# reference clones (re-clone commands in PROJECT_LOG.md)
+vendor/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# OS noise
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# large binaries (SD card images etc.)
+*.img
+*.7z
