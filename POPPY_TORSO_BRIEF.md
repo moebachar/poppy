@@ -239,12 +239,12 @@ poppy-revival/
 - faster-whisper: https://github.com/SYSTRAN/faster-whisper
 - MediaPipe Pose Landmarker: https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker
 
-## 10. Open questions — resolve in Phase 1, update this file
+## 10. Open questions — resolved in Phase 1 (2026-07-27), details in `hardware/INVENTORY.md`
 
-1. Exact Raspberry Pi models available at the Fab Lab (decides Path A vs B in Phase 3).
-2. USB2AX / SMPS2Dynamixel / 12 V PSU: present or to buy?
-3. True motor inventory and their as-found IDs (2013 unit may deviate from current docs).
-4. Which motors, if any, are actually dead (Phase 2 evidence).
-5. Is there a Pi camera / speakers in the head parts bin? (Nice-to-have for later; not on the critical path.)
+1. ✅ **Raspberry Pi:** Pi 3 ×2 at the lab — one free (boxed, ours for Phase 3 → Path A), one runs the lab's Poppy Ergo Jr (with its SD card) → off-limits.
+2. ✅ **USB2AX / SMPS2Dynamixel / 12 V PSU:** all present — USB2AX ×2, injector board ≥1, 12 V brick (label + polarity verification pending at bench start; several look-alike bricks on the table → only the verified one may touch the bus).
+3. 🟡 **Motor inventory:** 13 mounted; visible models = MX-28AT ×11 + AX-12A neck (map-consistent); original ID stickers partly readable ("37" on head_y). As-found bus IDs pending Phase 2 scan. Spares: AX-12A (in orange gripper), one loose motor TBD. The lab's new XL-320 stock is Ergo-Jr-only — NOT compatible.
+4. ⏳ **Dead motors:** Phase 2 scan pending — all 13 backdrive smoothly, no physical evidence supporting the "burned" rumor so far.
+5. ✅ **Camera / speakers:** head contains camera + stereo speakers + the official small screen.
 
 — End of brief. Start with Phase 0. Log everything.
