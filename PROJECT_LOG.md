@@ -36,3 +36,12 @@ Append-only. Newest entry at the BOTTOM. Every session, hardware finding, patch,
 **Phase 0 gate: MET** (repo ✓ · docs cached ✓ · motor map extracted ✓ · checklist ready ✓).
 
 **Next:** Phase 1 — Jalaleddin runs `hardware/INVENTORY_CHECKLIST.md` at the Fab Lab (photos → `hardware/photos/phase1/`), then we fill `INVENTORY.md`, resolve brief §10 Q1–Q3/Q5, and settle procurement. Nothing gets powered except the PSU open-circuit test (checklist §F).
+
+---
+
+## 2026-07-27 — Session 1 (continued) — Operating contract amendment: operator is a hardware novice
+
+- Jalaleddin flagged himself as a **robotics/electronics novice** (software fluency per brief §6 unchanged). Brief §6 "no hand-holding" now applies to **software topics only**; every physical/hardware procedure must assume zero prior experience.
+- `INVENTORY_CHECKLIST.md` rewritten to **v2**: picture gallery of what each part looks like (each linked image verified by actually viewing it), mini-glossary (crimp, barrel jack, PSU…), beginner multimeter walkthrough for the PSU test, and the universal rule — *unsure → photo front+back → move on; Claude identifies from photos*. Live photo-by-photo inventory offered as a workflow (photos land in `hardware/photos/phase1/`, Claude reads them directly).
+- Image verification bonus: the cached official photos confirm brief §1's caveat about early units — the 2013-era kit used an **Odroid U3 + eMMC + UBEC** (`parts_electronics.JPG`), and `head_odroid.JPG` shows a populated 2013-era head interior — likely what our (now empty) head once held. If an Odroid/eMMC turns up in the box: photograph, keep (archaeology; we still go the Raspberry Pi route).
+- Saved to Claude's persistent memory so this survives across sessions.

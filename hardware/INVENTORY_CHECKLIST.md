@@ -1,68 +1,95 @@
-# Phase 1 — Physical inventory checklist (Fab Lab)
+# Phase 1 — Physical inventory checklist (Fab Lab) — v2
 
-**Print this or open on phone. Work top to bottom. Tick every box.**
-**Photos:** phone quality is fine → dump into `hardware/photos/phase1/`, named `<section><nn>_<desc>.jpg` (e.g. `A01_front.jpg`, `B02_usb2ax_back.jpg`).
+Written for someone with **no robotics/electronics experience**. Two things to hold on to:
 
-## Rules (read first)
+1. **While nothing is powered, you cannot break anything** by looking, photographing, or gently moving parts. The whole phase is unpowered except one PSU test (§F) which has its own step-by-step box.
+2. **Universal rule: unsure what something is or what I'm asking? → photograph it front + back, tick nothing, move on.** Drop photos into `hardware/photos/phase1/` and I'll identify parts from the photos. We can also do this live: go section by section and send me photos as you go.
 
-- ⛔ **POWER NOTHING in this phase.** Sole exception: §F measures the 12 V PSU **alone, open-circuit** (nothing connected to its output).
-- Move joints **slowly and gently**, never force. Stop at hard resistance.
-- Photo BEFORE opening/moving anything. Disassembled screws → labeled bags/cups.
-- Flag suspects as you go: masking tape + marker on cables/motors.
+**Photo naming:** `<section><nn>_<desc>.jpg` → `A01_front.jpg`, `B02_mystery_green_board.jpg`, …
 
-**Kit:** phone/camera · multimeter · masking tape + marker · flashlight · small phillips screwdrivers · zip bags.
+---
+
+## 📷 Picture gallery — open these BEFORE the lab
+
+These are local files from the official Poppy docs (click from VS Code / file explorer). They show what you're hunting for:
+
+| Open this | What it shows |
+|---|---|
+| `docs/assembly-guides/poppy-torso/img/dynamixel-setup.jpg` | **The key photo.** Left to right: black power cable with round plug → **SMPS2Dynamixel** (small green "power injector" board in a clear case) → a **motor** (black box, "MX-28AT" printed on it). Bottom-left: the **USB2AX** (green USB-stick with a tiny white 3-pin plug). The two green things are the "missing switch / connecting device" your colleagues mentioned. |
+| `docs/assembly-guides/poppy-torso/img/parts_electronics.JPG` | The **2013-era electronics kit, every part labeled** — including USB2AX (bottom right) and the "Hardkernel Odroid U3" — the old brain board that early Poppys used instead of a Raspberry Pi. If anything in the box resembles any of these: photo. |
+| `docs/assembly-guides/poppy-torso/img/screwed_SMPS.JPG` | SMPS2Dynamixel close-up: green board, two black cylinders (capacitors), white 3-pin sockets. |
+| `docs/assembly-guides/poppy-torso/img/head_odroid.JPG` | **Inside of an open head, 2013 era** (Odroid board + black cables). Our head may have looked like this before its board was removed. |
+| `docs/assembly-guides/poppy-torso/img/raspi3_head.jpg` | Outside of the later Raspberry-Pi-3-era head. |
+| `docs/assembly-guides/poppy-torso/img/power_wiring.JPG` | SMPS boards + black daisy-chain cables mounted on a robot. |
+| `docs/assembly-guides/poppy-torso/img/motor_naming_convention.jpg` | Every joint's name + ID number. It shows the full humanoid — **our Torso is the upper half only** (abs_z and up). |
+| `docs/img/humanoid/torso-motors.png` · `torso-wires.png` | Clean diagrams: which motor is which, and how the cables run, for OUR robot. |
+
+## 📖 Mini-glossary
+
+- **Motor / servo / "Dynamixel"** — each joint is a black plastic box, 3–5 cm. Its model name (MX-28AT, AX-12A…) is printed in small white text on the side of the case.
+- **3-pin cable** — black cable; each end is a small white plastic connector (fingernail-sized) with 3 metal contacts. The robot's entire nervous system is these cables, chained from motor to motor (a "daisy-chain").
+- **Crimp** — the tiny metal clip where a wire enters a white connector. The weakest point; ages badly.
+- **Corrosion** — green/white crusty or powdery deposit on metal. Bad sign → photo it.
+- **Barrel jack** — round power plug like old laptop chargers: metal sleeve outside, hole with a pin inside.
+- **Board / PCB** — a green circuit board.
+- **PSU** — power supply, i.e. a wall-adapter brick.
+
+**Kit:** phone · multimeter (yellow/grey handheld tester with a dial and two probe wires — the lab has one) · masking tape + marker · flashlight · small phillips screwdrivers · zip bags for anything loose.
 
 ---
 
 ## A. Robot photo survey (~10 min)
 
-- [ ] A01–A08: front, back, left, right, head close-up, inside head cavity, base/mount, top-down.
-- [ ] Desk fixation: suction pad or clamp present? Condition? → A09
-- [ ] Every 3D-printed part: cracks / breaks / warps? List each damaged part (location if name unknown): ......................................................
-  - Expected: 2013-era plastic may be yellowed/brittle. Cosmetic ≠ structural — flag only cracks/breaks.
-- [ ] Any serials / stickers / markings on the structure → photo.
+- [ ] A01–A08: front, back, left side, right side, head close-up, **inside the head opening**, base/mount, top-down.
+- [ ] How does it attach to a desk? (suction pad / clamp / nothing) → A09
+- [ ] Look over every white plastic part: cracks, broken pieces, warping? List what/where (plain words fine — "left shoulder bracket cracked"): ......................................................
+  - Expected: 12-year-old plastic may be yellowed. Ugly is fine — only cracks/breaks matter.
+- [ ] Any stickers, serial numbers, handwriting on the robot → photo.
 
-## B. Head + box contents (~15 min) — answers brief §10 Q2/Q5
+## B. Head + box contents (~15 min)
 
-Photo EVERYTHING found, both sides, before removal.
+Empty the head and any boxes/bags that came with the robot. **Photo everything found, both sides, before moving it.** Compare against the gallery photos.
 
-- [ ] Single-board computer anywhere (head or box)? Model printed on PCB: ....................
-- [ ] **USB2AX**: tiny USB-A dongle with a single 3-pin socket. Present? → B01/B02 both sides
-- [ ] **SMPS2Dynamixel**: small PCB, DC barrel jack + 3-pin connector(s). Present? → B03
-- [ ] Any other 3-pin hub / splitter PCB? → photo
-- [ ] **12 V PSU brick**: present? → B04 photo of the LABEL (volts / amps / polarity symbol)
-- [ ] microSD card(s): collect ALL (an old image is archaeology gold). Count: ......
-- [ ] Camera module / webcam / speakers / screen? (robot config expects a camera)
-- [ ] Spare cables / screws / horns / paper docs? → B09 photo of the whole spread
+- [ ] Any computer board? (credit-card-sized green board — Raspberry Pi has its name printed on it; the Odroid U3 looks like the one in `parts_electronics.JPG`). Text printed on it: ....................
+- [ ] **USB2AX** — green USB stick with a tiny white 3-pin socket (see gallery). Found? → B01/B02
+- [ ] **SMPS2Dynamixel** — small green board with a barrel-jack socket + white 3-pin sockets (see gallery). Found? → B03
+- [ ] Any other small board with several white 3-pin sockets (a "hub")? → photo
+- [ ] **12 V wall/desk power brick**? → B04 = photo of its LABEL (we need the printed volts/amps and the little ⊕–•–⊖ polarity symbol)
+- [ ] Memory cards (microSD, fingernail-sized, or eMMC module like in `parts_electronics.JPG`): collect ALL — an old card can tell us what software this robot ran. Count: ......
+- [ ] Small camera module / webcam / speakers / little screen? → photo
+- [ ] Loose cables, screws, metal discs (motor "horns"), paper documents? → B09 photo of the whole spread
 
-## C. Spare Raspberry Pi identification — answers §10 Q1, decides Phase 3 path
+## C. Raspberry Pi identification — decides how we build the new brain
 
-For EACH spare Pi at the lab:
-- [ ] Silkscreen top side: "Raspberry Pi ___ Model ___" + RAM marking → one photo per board (C01, C02, …)
-- Quick ID: micro-USB power + full-size HDMI = **Pi 3/3B+** ✅ · USB-C + 2× micro-HDMI = **Pi 4** ✅ · USB-C + power button = **Pi 5** ⛔ official image won't boot · tiny stick = **Zero** ⛔ too weak
-- [ ] For the best candidate (Pi 3/4): its 5 V PSU available (micro-USB for Pi3, USB-C for Pi4)? microSD ≥16 GB? Ethernet cable?
+For EACH spare Raspberry Pi the lab has:
+- [ ] Photo of the board's top side (C01, C02, …) — the model ("Raspberry Pi 3 Model B+" etc.) is printed directly on the green board.
+- Quick ID if unreadable: micro-USB power + full-size HDMI = **Pi 3** ✅ · USB-C power + 2 small micro-HDMI = **Pi 4** ✅ · USB-C + a tiny power button = **Pi 5** ⛔ (official image won't boot on it) · gum-stick-sized = **Pi Zero** ⛔ (too weak)
+- [ ] For the best candidate (Pi 3 or 4): does the lab also have its 5 V charger (micro-USB for Pi 3, USB-C for Pi 4)? A microSD card ≥16 GB? An Ethernet cable?
 
 Available Pis: ..................................................................
 
-## D. Cable survey (~15 min, everything unpowered)
+## D. Cable survey (~15 min, nothing powered)
 
-- [ ] Count 3-pin motor cables (Molex SPOX). In robot: ...... · loose/spare: ......
-  (13 daisy-chained motors → expect ≥14 links incl. power injection; diagram: `docs/assembly-guides/poppy-torso/wiring_arrangement.md`)
-- [ ] Inspect every reachable crimp: green/white corrosion? backed-out pins? cracked housing? → flag + photo worst ones (D01–D03)
-- [ ] Gentle wiggle test at each connector: loose / falling out → flag.
-- Suspect cables found: ......
-- Expected: after ~12 years the crimps are suspect #1 (brief §3.3 rule 5). Flag generously.
+- [ ] Count the black 3-pin cables: on the robot ...... · loose/spare ......
+  (13 motors chained together → expect 14 or more. Diagram: `docs/img/humanoid/torso-wires.png`)
+- [ ] Look at every white connector you can reach: green/white crust (corrosion)? metal contacts pushed out? cracked plastic? → mark with tape + photo the worst (D01–D03)
+- [ ] Hold each connector and wiggle gently: if it falls out or feels loose → tape-flag it.
+- Suspects found: ......
+- Expected: after 12 years the crimps are the #1 suspect for "dead" motors. Flag generously — cables are cheap.
 
-## E. Motor survey — 13 expected (~20 min) — answers §10 Q3
+## E. Motor survey — 13 motors expected (~20 min)
 
-Keep `hardware/motor_map.md` open alongside. Per motor: read the model printed on the case (MX-28AT / AX-12A / AX-18A?), note any ID sticker, then — everything UNPOWERED — rotate the joint slowly a few degrees each way where the structure allows:
+Keep `hardware/motor_map.md` + `motor_naming_convention.jpg` open to know which joint is which. For each motor:
 
-- **smooth, firm resistance = OK** (an unpowered MX-28 backdrives stiffly — that's normal)
-- clicking / grinding / notchy = gearbox suspect
-- spins free, no resistance = stripped gears
-- locked solid = do NOT force → flag
+1. Read the model printed in white text on the black case: MX-28AT? AX-12A? AX-18A? something else?
+2. Any handwritten sticker/number on it?
+3. **Everything unpowered:** hold the limb next to that joint and move it slowly a few degrees the way the joint is obviously meant to move, then back. What does it feel like?
+   - **smooth but firm resistance = OK** (unpowered motors resist — that's normal, don't fight it)
+   - clicking / crunching / bumpy = gearbox suspect
+   - moves totally freely like a loose hinge = stripped gears
+   - won't move at all = do NOT force → flag
 
-| Joint (map name) | Model on case | ID sticker | Rotation feel | Visual damage | Photo |
+| Joint (map name) | Model on case | Sticker | Feel | Visible damage | Photo |
 |---|---|---|---|---|---|
 | abs_z (waist turn) | | | | | |
 | bust_y (lean fwd/back) | | | | | |
@@ -78,43 +105,45 @@ Keep `hardware/motor_map.md` open alongside. Per motor: read the model printed o
 | r_arm_z (R upper-arm twist) | | | | | |
 | r_elbow_y (R elbow) | | | | | |
 
-- [ ] Photo of each motor label where reachable (E01–E13, table order).
-- [ ] Motor count ≠ 13, or a model ≠ map? Note: ..............................
+- [ ] E01–E13: photo of each motor's label where reachable (same order as the table).
+- [ ] Fewer/more than 13 motors, or a model not in the map? Note it: ..............................
 
-## F. PSU electrical check — PSU ALONE, output unconnected
+## F. PSU test — the ONLY powered step. PSU alone, nothing connected to it.
 
-Skip if no 12 V PSU found (→ §H).
+Skip if no 12 V brick was found (→ §H). This is safe: the brick's 12 V output cannot hurt you. The only real rule: **probe only the output plug, never the wall-plug prongs.**
 
-1. [ ] PSU label photo if not done (B04). Expected: 12 V, ≥5 A.
-2. [ ] Plug PSU into mains, **nothing on its output**.
-3. [ ] Multimeter: DC voltage, 20 V range. Black probe on barrel OUTSIDE (sleeve), red probe INSIDE (center pin).
-4. [ ] Reading: .......... V — expected **+12.0 to +12.5 V, positive sign = center-positive**.
-5. [ ] F01 photo of the multimeter display during measurement.
-- ⚠️ Negative reading = center-negative → **do not use, flag loudly** (reverse polarity is the classic Dynamixel killer, brief §7.2).
-- ⚠️ 0 V or far off → PSU dead → §H.
+**Multimeter how-to (any standard handheld one):**
+1. [ ] Plug the brick into the wall. Its output cable (barrel jack) connects to **nothing**.
+2. [ ] Multimeter probes: black probe into the socket marked **COM** · red probe into the socket marked **V** (often "VΩmA"). NOT the socket marked 10A/20A.
+3. [ ] Turn the dial to **DC volts**: symbol **V⎓** (a V with a straight line + dashed line). If there are numbers, pick **20**. If your meter says "auto", that's fine.
+4. [ ] Touch the **red probe tip inside the barrel's center hole**, and the **black probe tip against the outer metal sleeve**. Hold both steady.
+5. [ ] Read the display: .......... V
+   - Expected: **+12.0 to +12.5** → good, "center-positive".
+   - **A minus sign** (−12) → center-negative → ⚠️ **do not ever use this brick, flag it loudly** — reversed polarity is the classic Dynamixel motor killer and possibly this robot's origin story.
+   - 0 or garbage → brick is dead → §H.
+6. [ ] F01: photo of the display while measuring (one hand holds both probes crossed, other hand photos — or ask a colleague).
+- Meter looks different / display confusing → photo the meter's dial + display and ask me.
 
-## G. Lab tools confirm
+## G. Lab tools check
 
-- [ ] Multimeter works (test on a AA battery ≈ 1.5 V).
-- [ ] Bench power supply? Model/specs: .................... (useful substitute if it does 12 V / ≥5 A)
-- [ ] Soldering iron · crimp tool · heat-shrink?
-- [ ] 3D printer + filament available (for §A reprints)?
+- [ ] Multimeter works? (quick test: dial on V⎓, probes on the two ends of any AA battery → ~1.5 V)
+- [ ] Bench power supply (box with knobs + voltage display)? Model/specs: ....................
+- [ ] Soldering iron? Crimping tool? Heat-shrink?
+- [ ] 3D printer + filament (to reprint broken white parts)?
 
-## H. Missing-parts tally → procurement (brief §3.4)
+## H. What's missing → shopping list (mark after B–G)
 
-Tick what is MISSING after B–G, then order/scavenge:
-
-- [ ] USB→Dynamixel adapter (no USB2AX found) → **Robotis U2D2** (~€50; Generation Robots / Robotis EU)
-- [ ] Power injector (no SMPS2Dynamixel found) → SMPS2Dynamixel or U2D2 Power Hub Board
-- [ ] 12 V ≥5 A PSU (none / dead / wrong polarity) → quality 12 V 5–6 A barrel PSU, center-positive (confirm jack size vs injector)
-- [ ] Spare 3-pin cables → Molex SPOX 5264 3-pin, ~10× assorted 140–200 mm
-- [ ] microSD ≥16 GB (class 10 / A1)
-- [ ] Raspberry Pi 3B/3B+/4 + its 5 V PSU (if no usable spare at the lab)
-- [ ] ⛔ Do NOT buy motors yet — Phase 2 evidence first (brief §3.3).
+- [ ] No USB2AX found → buy **Robotis U2D2** (~€50 — Generation Robots or Robotis EU webshop)
+- [ ] No SMPS2Dynamixel found → buy **SMPS2Dynamixel** or **U2D2 Power Hub Board**
+- [ ] No usable 12 V brick → buy 12 V / 5–6 A PSU, center-positive barrel plug
+- [ ] Spare 3-pin cables → "Molex SPOX 5264 3-pin" Dynamixel cables, ~10× of 140–200 mm
+- [ ] No microSD ≥16 GB → buy one (class 10 / A1)
+- [ ] No Pi 3/4 at the lab → buy Pi 4 + official USB-C PSU
+- [ ] ⛔ Do NOT buy motors yet — even if colleagues say some are burned. Phase 2 will test each motor and prove it.
 
 ## I. Wrap-up
 
-- [ ] All photos → `hardware/photos/phase1/`, renamed per scheme.
-- [ ] Report findings to Claude → together fill `hardware/INVENTORY.md`, update brief §10, log the session.
+- [ ] All photos → `hardware/photos/phase1/`, renamed per the scheme (approximate is fine).
+- [ ] Come back to me with the photos + your notes → I fill `hardware/INVENTORY.md`, we update the brief's open questions and log the session.
 
-**Phase 1 gate (DONE-WHEN):** `INVENTORY.md` complete with photos · missing-parts list resolved (in hand or ordered) · Pi model known.
+**Phase 1 is done when:** inventory written up with photos · everything missing is in hand or ordered · we know which Pi we'll use.
