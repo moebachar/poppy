@@ -3,9 +3,15 @@
 Written for someone with **no robotics/electronics experience**. Two things to hold on to:
 
 1. **While nothing is powered, you cannot break anything** by looking, photographing, or gently moving parts. The whole phase is unpowered except one PSU test (§F) which has its own step-by-step box.
-2. **Universal rule: unsure what something is or what I'm asking? → photograph it front + back, tick nothing, move on.** Drop photos into `hardware/photos/phase1/` and I'll identify parts from the photos. We can also do this live: go section by section and send me photos as you go.
+2. **Universal rule: unsure what something is or what I'm asking? → photo it (or describe it), tick nothing, move on.** I'll identify parts from photos or descriptions. We can also do this live: go section by section and send me things as you go.
 
-**Photo naming:** `<section><nn>_<desc>.jpg` → `A01_front.jpg`, `B02_mystery_green_board.jpg`, …
+**No phone camera? Use this laptop.** It has a working webcam (verified) — press Win, type "Camera", Enter; spacebar takes a photo. Photos land in `Pictures\Camera Roll` — just tell me when you've taken a batch and I'll move + rename them into `hardware/photos/phase1/` myself. Tips: good light, hold the part 20–30 cm from the webcam, steady for a second. Small parts: hold them up to the camera one at a time.
+
+**Even better than a photo, when there's printed text** (motor model, PSU label, board name): just read it and type it to me — more reliable than any webcam shot.
+
+**When a photo is impractical** (whole-robot angles with a laptop are awkward): describe in words — size, color, what connectors it has — the gallery images below give you the vocabulary. Whole-robot photos can wait for a borrowed phone another day; they're documentation, not blockers.
+
+**Photo naming:** `<section><nn>_<desc>.jpg` → `A01_front.jpg`, `B02_mystery_green_board.jpg`, … (skip renaming if using Camera Roll — I'll do it).
 
 ---
 
@@ -121,7 +127,7 @@ Skip if no 12 V brick was found (→ §H). This is safe: the brick's 12 V output
    - Expected: **+12.0 to +12.5** → good, "center-positive".
    - **A minus sign** (−12) → center-negative → ⚠️ **do not ever use this brick, flag it loudly** — reversed polarity is the classic Dynamixel motor killer and possibly this robot's origin story.
    - 0 or garbage → brick is dead → §H.
-6. [ ] F01: photo of the display while measuring (one hand holds both probes crossed, other hand photos — or ask a colleague).
+6. [ ] F01: photo of the display while measuring if a colleague can help — otherwise just type me the exact number including the sign (e.g. "+12.14" or "−12.1"). The sign is the whole point.
 - Meter looks different / display confusing → photo the meter's dial + display and ask me.
 
 ## G. Lab tools check
