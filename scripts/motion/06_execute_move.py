@@ -23,14 +23,17 @@ import pypot.dynamixel
 HERE = Path(__file__).parent
 STANCE_FILE = HERE / "poses" / "stand.json"
 
-# name -> (id, +1 direct / -1 indirect)   [ground truth: hardware/motor_map.md]
+# name -> (id, sign). Signs are the config orientation GLOBALLY FLIPPED:
+# empirical 2026-07-27 — on this 2013 unit, l_shoulder_x and l_elbow_y both
+# moved opposite to the sim under config signs (operator e-stopped the wave).
+# Config orientation: direct=+1/indirect=-1 -> we apply the negation of it.
 MOTORS = {
-    "abs_z": (33, +1), "bust_y": (34, -1), "bust_x": (35, -1),
-    "head_z": (36, +1), "head_y": (37, -1),
-    "l_shoulder_y": (41, +1), "l_shoulder_x": (42, -1),
-    "l_arm_z": (43, -1), "l_elbow_y": (44, +1),
-    "r_shoulder_y": (51, -1), "r_shoulder_x": (52, -1),
-    "r_arm_z": (53, -1), "r_elbow_y": (54, -1),
+    "abs_z": (33, -1), "bust_y": (34, +1), "bust_x": (35, +1),
+    "head_z": (36, -1), "head_y": (37, +1),
+    "l_shoulder_y": (41, -1), "l_shoulder_x": (42, +1),
+    "l_arm_z": (43, +1), "l_elbow_y": (44, -1),
+    "r_shoulder_y": (51, +1), "r_shoulder_x": (52, +1),
+    "r_arm_z": (53, +1), "r_elbow_y": (54, +1),
 }
 TEMP_HARD = 52
 STEP = 0.1          # playback resample step (s)

@@ -1,0 +1,9 @@
+{
+  "name": "sigtest",
+  "frames": [
+    { "positions": { "l_shoulder_x": 0 }, "duration": 1.0 },
+    { "positions": { "l_shoulder_x": 25 }, "duration": 2.0 },
+    { "positions": { "l_shoulder_x": 25 }, "duration": 1.5 },
+    { "positions": { "l_shoulder_x": 0 }, "duration": 2.0 }
+  ]
+}
