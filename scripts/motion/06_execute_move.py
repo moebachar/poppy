@@ -35,6 +35,16 @@ MOTORS = {
 TEMP_HARD = 52
 STEP = 0.1          # playback resample step (s)
 MAX_DELTA = 120.0   # refuse joints asked to travel further than this from stance
+MARGIN = 5.0
+# robot-space joint limits from the official config (hardware/JOINT_CHEATSHEET.md)
+LIMITS = {
+    "abs_z": (-80, 80), "bust_y": (-46, 23), "bust_x": (-40, 40),
+    "head_z": (-100, 100), "head_y": (0, 50),
+    "l_shoulder_y": (-120, 155), "l_shoulder_x": (-105, 110),
+    "l_arm_z": (-90, 90), "l_elbow_y": (-140, 0),
+    "r_shoulder_y": (-155, 120), "r_shoulder_x": (-110, 105),
+    "r_arm_z": (-90, 90), "r_elbow_y": (0, 147),
+}
 
 
 def load_frames(path):
@@ -70,6 +80,16 @@ def main():
     frames = load_frames(mv)
     if len(frames) < 2:
         raise SystemExit("move has fewer than 2 frames")
+    clamped = set()
+    for _, pose in frames:
+        for name, v in pose.items():
+            lo, hi = LIMITS[name]
+            cv = min(max(v, lo + MARGIN), hi - MARGIN)
+            if cv != v:
+                clamped.add(name)
+                pose[name] = cv
+    if clamped:
+        print(f"note: clamped to joint limits (±{MARGIN:.0f}° margin): {sorted(clamped)}", flush=True)
     stance = {int(k): v for k, v in
               json.loads(STANCE_FILE.read_text())["positions"].items()}
 

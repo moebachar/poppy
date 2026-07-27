@@ -1,0 +1,149 @@
+{
+  "name": "wave",
+  "frames": [
+    {
+      "positions": {
+        "abs_z": 0.0,
+        "bust_y": 0.1,
+        "bust_x": 0.0,
+        "head_z": 0.0,
+        "head_y": -1.2,
+        "l_shoulder_y": 0.0,
+        "l_shoulder_x": -1.0,
+        "l_arm_z": 0.0,
+        "l_elbow_y": 0.0,
+        "r_shoulder_y": 0.6,
+        "r_shoulder_x": 0.0,
+        "r_arm_z": -0.0,
+        "r_elbow_y": 0.0
+      },
+      "duration": 2.0
+    },
+    {
+      "positions": {
+        "abs_z": 0.0,
+        "bust_y": 0.2,
+        "bust_x": -0.2,
+        "head_z": 0.0,
+        "head_y": -1.2,
+        "l_shoulder_y": 0.0,
+        "l_shoulder_x": 55.2,
+        "l_arm_z": -0.1,
+        "l_elbow_y": 0.0,
+        "r_shoulder_y": 0.6,
+        "r_shoulder_x": 0.0,
+        "r_arm_z": -0.0,
+        "r_elbow_y": 0.0
+      },
+      "duration": 1.5
+    },
+    {
+      "positions": {
+        "abs_z": 0.0,
+        "bust_y": 0.2,
+        "bust_x": -0.2,
+        "head_z": 0.0,
+        "head_y": -1.2,
+        "l_shoulder_y": 0.0,
+        "l_shoulder_x": 114.8,
+        "l_arm_z": -0.1,
+        "l_elbow_y": 0.0,
+        "r_shoulder_y": 0.6,
+        "r_shoulder_x": 0.0,
+        "r_arm_z": -0.0,
+        "r_elbow_y": 0.0
+      },
+      "duration": 1.5
+    },
+    {
+      "positions": {
+        "abs_z": 0.0,
+        "bust_y": 0.0,
+        "bust_x": -0.2,
+        "head_z": 0.0,
+        "head_y": -1.2,
+        "l_shoulder_y": -60.0,
+        "l_shoulder_x": 117.4,
+        "l_arm_z": -0.1,
+        "l_elbow_y": 0.0,
+        "r_shoulder_y": 0.6,
+        "r_shoulder_x": 0.0,
+        "r_arm_z": -0.0,
+        "r_elbow_y": 0.0
+      },
+      "duration": 1.5
+    },
+    {
+      "positions": {
+        "abs_z": 0.0,
+        "bust_y": 0.0,
+        "bust_x": -0.2,
+        "head_z": 0.0,
+        "head_y": -1.2,
+        "l_shoulder_y": -60.0,
+        "l_shoulder_x": 117.1,
+        "l_arm_z": -0.0,
+        "l_elbow_y": 40.0,
+        "r_shoulder_y": 0.6,
+        "r_shoulder_x": 0.0,
+        "r_arm_z": -0.0,
+        "r_elbow_y": 0.0
+      },
+      "duration": 1.0
+    },
+    {
+      "positions": {
+        "abs_z": 0.0,
+        "bust_y": 0.1,
+        "bust_x": -0.2,
+        "head_z": 0.0,
+        "head_y": -1.2,
+        "l_shoulder_y": -60.0,
+        "l_shoulder_x": 117.7,
+        "l_arm_z": -0.0,
+        "l_elbow_y": -40.0,
+        "r_shoulder_y": 0.6,
+        "r_shoulder_x": 0.0,
+        "r_arm_z": -0.0,
+        "r_elbow_y": 0.0
+      },
+      "duration": 1.0
+    },
+    {
+      "positions": {
+        "abs_z": 0.0,
+        "bust_y": 0.0,
+        "bust_x": -0.2,
+        "head_z": -0.0,
+        "head_y": -1.2,
+        "l_shoulder_y": -60.0,
+        "l_shoulder_x": 117.4,
+        "l_arm_z": -0.1,
+        "l_elbow_y": 0.0,
+        "r_shoulder_y": 0.6,
+        "r_shoulder_x": 0.0,
+        "r_arm_z": -0.0,
+        "r_elbow_y": 0.0
+      },
+      "duration": 0.5
+    },
+    {
+      "positions": {
+        "abs_z": 0.0,
+        "bust_y": 0.1,
+        "bust_x": 0.0,
+        "head_z": 0.0,
+        "head_y": -1.2,
+        "l_shoulder_y": 0.0,
+        "l_shoulder_x": -1.0,
+        "l_arm_z": 0.0,
+        "l_elbow_y": 0.0,
+        "r_shoulder_y": 0.6,
+        "r_shoulder_x": 0.0,
+        "r_arm_z": -0.0,
+        "r_elbow_y": 0.0
+      },
+      "duration": 1.5
+    }
+  ]
+}
