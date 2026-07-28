@@ -11,6 +11,11 @@ sculpt is exactly what replays.
 Record: all motors go soft, you move the robot like a puppet, Enter stops.
 Replay: whole body freezes stiff, travels slowly to the move's first frame
 (guarded), then streams the recording; Ctrl+C at any point = release.
+
+Seam motors (41, 42, 44) run in multi-turn mode (see dxl_multiturn.py):
+their position IO goes through raw registers, recordings are unwrapped to a
+continuous series, and replays are rebased by whole turns to the current
+reading — so the old +/-180 rollover can never produce a 300-degree sweep.
 """
 import argparse
 import json
@@ -20,12 +25,34 @@ from pathlib import Path
 
 import pypot.dynamixel
 
+from dxl_multiturn import SEAM_IDS, present_deg, goto_deg, freeze, rebase, is_multiturn
+
 RECORDED = Path(__file__).parent / "moves" / "recorded"
 TEMP_HARD = 52
 
 
+def unwrap(vals):
+    """Make a recorded series continuous (undo +/-360 flickers at the seam)."""
+    out = [vals[0]]
+    for v in vals[1:]:
+        d = v - out[-1]
+        d -= 360.0 * round(d / 360.0)
+        out.append(out[-1] + d)
+    return out
+
+
+def check_multiturn(dxl, seam):
+    bad = [i for i in seam if not is_multiturn(dxl, i)]
+    if bad:
+        raise SystemExit(f"motors {bad} not in multi-turn mode — run: "
+                         f"python scripts/motion/dxl_multiturn.py --port COM7 enable")
+
+
 def do_record(dxl, present, args):
     path = RECORDED / f"{args.name}.json"
+    seam = [i for i in present if i in SEAM_IDS]
+    others = [i for i in present if i not in SEAM_IDS]
+    check_multiturn(dxl, seam)
     dxl.disable_torque(present)
     print("robot is SOFT — hold him. Recording starts in 3s...", flush=True)
     time.sleep(3)
@@ -36,9 +63,11 @@ def do_record(dxl, present, args):
     period = 1.0 / args.hz
     while not stop.is_set() and time.time() - t0 < args.max_seconds:
         tick = time.time()
-        pos = dxl.get_present_position(present)
-        frames.append({"t": round(tick - t0, 3),
-                       "pos": {str(i): round(p, 2) for i, p in zip(present, pos)}})
+        pos = {str(i): round(p, 2)
+               for i, p in zip(others, dxl.get_present_position(others))}
+        for i in seam:
+            pos[str(i)] = round(present_deg(dxl, i), 2)
+        frames.append({"t": round(tick - t0, 3), "pos": pos})
         time.sleep(max(0, period - (time.time() - tick)))
     if len(frames) < 5:
         raise SystemExit("recording too short — nothing saved")
@@ -47,7 +76,8 @@ def do_record(dxl, present, args):
         {"name": args.name, "space": "raw", "hz": args.hz, "ids": list(present),
          "frames": frames}, indent=1))
     print(f"saved {len(frames)} frames ({frames[-1]['t']:.1f} s) -> {path}")
-    print(f"replay with:  python {Path(__file__).name} --port {args.port} replay {args.name}")
+    print(f"replay with:  python scripts\\motion\\07_record_replay.py "
+          f"--port {args.port} replay {args.name}")
 
 
 def do_replay(dxl, present, args):
@@ -56,25 +86,42 @@ def do_replay(dxl, present, args):
         raise SystemExit(f"no such recording: {path} (try 'list')")
     frames = json.loads(path.read_text())["frames"]
     ids = [i for i in present if str(i) in frames[0]["pos"]]
-    first = {i: frames[0]["pos"][str(i)] for i in ids}
+    seam = [i for i in ids if i in SEAM_IDS]
+    others = [i for i in ids if i not in SEAM_IDS]
+    check_multiturn(dxl, seam)
+
+    # seam trajectories: unwrap to continuous, then rebase to current reading
+    seam_traj = {}
+    for i in seam:
+        series = unwrap([f["pos"][str(i)] for f in frames])
+        shift = rebase(series[0], present_deg(dxl, i)) - series[0]
+        seam_traj[i] = [v + shift for v in series]
 
     try:
         # freeze the whole body where it is (per-motor, goal:=present first)
         current = dict(zip(present, dxl.get_present_position(present)))
         for i in present:
             dxl.set_moving_speed({i: 20})
-            dxl.set_goal_position({i: current[i]})
-            dxl.enable_torque((i,))
+            if i in SEAM_IDS:
+                freeze(dxl, i)
+                current[i] = present_deg(dxl, i)
+            else:
+                dxl.set_goal_position({i: current[i]})
+                dxl.enable_torque((i,))
         time.sleep(0.3)
         off = [i for i, on in zip(present, dxl.is_torque_enabled(present)) if not on]
         print(f"TORQUE READ-BACK: {'ALL ON' if not off else f'OFF: {off}'}", flush=True)
 
         # travel slowly to the first frame, guarded
+        first = {i: frames[0]["pos"][str(i)] for i in others}
+        first.update({i: seam_traj[i][0] for i in seam})
         worst = max(abs(first[i] - current[i]) for i in ids)
         if worst > args.max_travel and not args.force:
             raise SystemExit(f"refusing: first frame is {worst:.0f} deg away (--force to override)")
-        for i in ids:
+        for i in others:
             dxl.set_goal_position({i: first[i]})
+        for i in seam:
+            goto_deg(dxl, i, first[i])
         time.sleep(worst / 20 + 0.8)
         print(f"at start — replaying {len(frames)} frames "
               f"({frames[-1]['t'] - frames[0]['t']:.1f} s)", flush=True)
@@ -84,17 +131,19 @@ def do_replay(dxl, present, args):
             dxl.set_moving_speed({i: 150})
         t0, tref = time.time(), frames[0]["t"]
         last_temp = t0
-        for fr in frames[1:]:
+        for n, fr in enumerate(frames[1:], start=1):
             target = t0 + (fr["t"] - tref)
             now = time.time()
             if now > target + 0.08:
                 continue
             if target > now:
                 time.sleep(target - now)
-            for i in ids:
+            for i in others:
                 v = fr["pos"].get(str(i))
                 if v is not None:
                     dxl.set_goal_position({i: v})
+            for i in seam:
+                goto_deg(dxl, i, seam_traj[i][n])
             if time.time() - last_temp > 2:
                 last_temp = time.time()
                 if max(dxl.get_present_temperature(present)) >= TEMP_HARD:
