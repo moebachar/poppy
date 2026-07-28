@@ -137,3 +137,27 @@ Artifacts: `hardware/motor_status.md` (all verdicts) · scanner patched to ignor
 **Operator's declared goal:** a library of **12–15 named moves** to choose from and play. **Deferred by operator** until motor 54 is replaced (screwdriver still missing; expected in the coming days). Next mission: operator will announce.
 
 **Open items:** motor 54 swap (then ID 1→54, baud→1M, 13/13 rescan) · sim pipeline revival = optional later (needs seam-aware 06 + per-joint sign verification) · zero calibration only if we ever re-horn.
+
+---
+
+## 2026-07-28 — Session 5 (afternoon) — Phase 3 opened: head/brain bring-up (Pi 3) — flashed & recon done, blocked on 5 V power
+
+**Mission (operator):** Pi 3 into the head; run our motion stack ON the Pi, commanded from the laptop over SSH; then speakers ("mouth"), camera, maybe mic later. 3-hour box — power hunting ate it; ~85% of the software path is done.
+
+**Head recon (photos: `hardware/photos/phase3-head/C01–C09`):**
+- Camera = **JDEPC-OV05 USB module** (plain USB webcam → plugs into Pi; zero extra hardware).
+- Speakers = **Visaton K 20.40, 8 Ω ×2**, soldered leads ending in **bare stripped wire — the audio amp is MISSING** from this unit (official-style build wants a small 5 V class-D amp, e.g. MAX98306/PAM8403 → procurement).
+- "Screen" = **dummy** (official BOM: "Fake manga screen"; no sockets — confirmed by operator). Topic closed.
+- Found loose in kit: **Pixl board** — it's the **Ergo Jr's** Pi interface (7.5 V in). Tried as a bench 5 V source for the Pi (in-spec use, correct 7.8 V center-positive adapter verified by meter): input rail live (7.79 V on motor port) but **5 V output to Pi pins 2/6 reads 0 → Pi-power section dead**. Abandoned; bagged & labeled.
+- LM324N found by operator = quad op-amp, not a speaker amp (educational moment: signal vs power amp).
+
+**SD card saga:**
+- Mystery card in the boxed Pi = standard Raspberry Pi OS 2021-05-07 — but with **UART-at-1M-baud settings in config.txt: someone at the lab attempted a Poppy/Dynamixel brain in 2021** and stopped. Full-disk backup taken before wipe (`C:\Users\mbachar\pi-sd-backup\pi3-sd-2021.img.gz`, 29.5 GB → 3.1 GB, gzip-verified restorable) — operator's call: "it belongs to the lab".
+- Flashed **Raspberry Pi OS Lite 64-bit** via Raspberry Pi Imager (winget absent → direct installer): hostname `poppy`, user `poppy`, **SSH public-key-only** (laptop ed25519 key), WiFi = **laptop's Windows mobile hotspot on 2.4 GHz** (org WiFi CESI_Recherche is WPA2-PSK but **5 GHz-only here — invisible to a Pi 3**; phone hotspot unavailable). Mid-course error: card pulled early + Windows format → Imager "Accès refusé" → fixed with admin `Clear-Disk -Number 1 -RemoveData` re-flash.
+- First flash DID join the hotspot (ARP `b8-27-eb` at 192.168.137.60, ping OK) but **SSH refused** — likely the Services-tab SSH toggle missed; re-flash includes it (unverified: no boot attempt on the corrected card yet).
+
+**Power saga (the day's real blocker):** Pi 3 wants 5 V ⎓ 2.5 A. Laptop USB (~0.5 A) = red-LED brownouts (but boots headless to WiFi — usable stopgap). Lab findings: 1 A wall wart (too weak), 12 V 1.5 A (VETOED — 5 V only, ever), 7.5 V 2 A (fed the dead Pixl). Official Pi PSU from inventory day: not found today.
+
+**Safety rules taught & enforced:** volts must match exactly / amps are "up to" · never barrel-into-Pi · polarity check by meter before energizing unknown adapters · photo-verify board mounting before power.
+
+**Tomorrow's opening moves:** ① buy/borrow **5 V ⎓ 2.5 A micro-USB PSU** (+ class-D amp; + PH0/PH1 driver for motor 54; optional spare microSD) · ② boot corrected card (laptop USB OK as stopgap), hotspot on, SSH in (`poppy@192.168.137.x`, key auth) · ③ venv + pypot on Pi, copy scripts/poses/moves, USB2AX into Pi, scan → replay a move from the Pi = **the brain milestone** · ④ voice via any powered 3.5 mm speaker until the amp arrives.
