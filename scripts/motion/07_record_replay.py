@@ -4,11 +4,13 @@
 Everything is RAW motor space — no sim, no signs, no offsets. What you
 sculpt is exactly what replays.
 
-    python 07_record_replay.py --port COM7 record hello_wave
-    python 07_record_replay.py --port COM7 replay hello_wave
+    python 07_record_replay.py --port COM7 record wave2 --m41 20 --m42 20 --m44 20
+    python 07_record_replay.py --port COM7 replay wave2
     python 07_record_replay.py --port COM7 list
 
-Record: all motors go soft, you move the robot like a puppet, Enter stops.
+Record (teach mode): the whole body holds the stand pose RIGID; only motors
+named with --m<ID> <stiffness%> go loose and follow your hand (what you move,
+stays). Motor ids: hardware/motor_map.md. Enter stops and saves.
 Replay: whole body freezes stiff, travels slowly to the move's first frame
 (guarded), then streams the recording; Ctrl+C at any point = release.
 
@@ -19,6 +21,7 @@ reading — so the old +/-180 rollover can never produce a 300-degree sweep.
 """
 import argparse
 import json
+import re
 import threading
 import time
 from pathlib import Path
@@ -48,12 +51,8 @@ def check_multiturn(dxl, seam):
                          f"python scripts/motion/dxl_multiturn.py --port COM7 enable")
 
 
-CORE_IDS = (33, 34, 35, 36, 37)   # waist, bust, head: stiffer so posture holds
-
-
 def do_record(dxl, present, args):
-    """Teach mode: robot holds its pose gently; push a limb firmly and it
-    stays where you put it (goal follows the hand, torque ceiling lowered)."""
+    """Teach mode: body rigid; --m<ID>-selected motors loose, following the hand."""
     path = RECORDED / f"{args.name}.json"
     seam = [i for i in present if i in SEAM_IDS]
     others = [i for i in present if i not in SEAM_IDS]
@@ -98,48 +97,35 @@ def do_record(dxl, present, args):
                 print(f"note: too far from pose '{args.from_pose}' ({worst:.0f} deg) "
                       f"— teaching from current position", flush=True)
 
-        # now lower the torque ceiling: gentle hold, yields to a firm push
-        for i in present:
+        # everything stays rigid at 100% with a FIXED goal (no gravity ratchet).
+        # Only the motors named with --m<ID> <stiffness> go loose: torque
+        # ceiling lowered, goal follows the hand every tick (near-zero drag).
+        loose = {i: pct for i, pct in args.loose.items() if i in present}
+        absent = [i for i in args.loose if i not in present]
+        if absent:
+            print(f"note: --m motors not on the bus, ignored: {absent}", flush=True)
+        if not loose:
+            print("WARNING: no --m<ID> flags — every joint is rigid, nothing "
+                  "will be movable by hand.", flush=True)
+        for i, pct in loose.items():
             dxl.set_moving_speed({i: 150})
-            dxl.set_torque_limit(
-                {i: args.core_stiffness if i in CORE_IDS else args.arm_stiffness})
+            dxl.set_torque_limit({i: pct})
 
         stop = threading.Event()
         threading.Thread(target=lambda: (input(), stop.set()), daemon=True).start()
-        print("TEACH MODE: he holds the pose — push limbs firmly to reshape him; "
-              "they stay where you leave them.", flush=True)
+        print(f"TEACH MODE: body rigid; loose motors {loose if loose else '{}'} "
+              f"follow your hand.", flush=True)
         print(f"RECORDING at {args.hz} Hz — press Enter to stop.", flush=True)
         frames, t0 = [], time.time()
         period = 1.0 / args.hz
-        # grab-latch: LOCKED joints hold their goal rigid (no gravity ratchet);
-        # pushing one past the deadband unlocks it — it then follows the hand
-        # freely (goal := present, near-zero drag) until still for ~0.7 s,
-        # when it re-locks where you left it.
-        goals = positions()
-        last = dict(goals)
-        unlocked = {i: False for i in present}
-        still = {i: 0 for i in present}
-        relatch_ticks = max(int(0.7 * args.hz), 3)
         while not stop.is_set() and time.time() - t0 < args.max_seconds:
             tick = time.time()
             pos = positions()
-            for i in present:
-                if not unlocked[i] and abs(pos[i] - goals[i]) > args.follow_deadband:
-                    unlocked[i] = True
-                    still[i] = 0
-                if unlocked[i]:
-                    goals[i] = pos[i]
-                    if i in SEAM_IDS:
-                        goto_deg(dxl, i, pos[i])
-                    else:
-                        dxl.set_goal_position({i: pos[i]})
-                    if abs(pos[i] - last[i]) < 0.15:
-                        still[i] += 1
-                        if still[i] >= relatch_ticks:
-                            unlocked[i] = False
-                    else:
-                        still[i] = 0
-                last[i] = pos[i]
+            for i in loose:        # goal follows the hand: what you move, stays
+                if i in SEAM_IDS:
+                    goto_deg(dxl, i, pos[i])
+                else:
+                    dxl.set_goal_position({i: pos[i]})
             frames.append({"t": round(tick - t0, 3),
                            "pos": {str(i): round(p, 2) for i, p in pos.items()}})
             time.sleep(max(0, period - (time.time() - tick)))
@@ -250,17 +236,22 @@ def main():
     ap.add_argument("--hz", type=float, default=20.0)
     ap.add_argument("--from-pose", default="stand",
                     help="pose to settle into before teach mode ('none' to skip)")
-    ap.add_argument("--core-stiffness", type=float, default=60.0,
-                    help="teach-mode torque %% for waist/bust/head")
-    ap.add_argument("--arm-stiffness", type=float, default=25.0,
-                    help="teach-mode torque %% for arms")
-    ap.add_argument("--follow-deadband", type=float, default=4.0,
-                    help="degrees a joint must be pushed before its goal follows")
     ap.add_argument("--max-seconds", type=float, default=120.0)
     ap.add_argument("--hold-seconds", type=float, default=10.0)
     ap.add_argument("--max-travel", type=float, default=100.0)
     ap.add_argument("--force", action="store_true")
-    args = ap.parse_args()
+    args, extra = ap.parse_known_args()
+
+    # per-motor teach stiffness: --m41 20 --m42 20  (motor id -> torque %)
+    args.loose = {}
+    it = iter(extra)
+    for tok in it:
+        m = re.match(r"^--m(\d+)$", tok)
+        val = next(it, None)
+        if not m or val is None:
+            raise SystemExit(f"unknown option '{tok}' — per-motor stiffness "
+                             f"looks like: --m41 20 --m42 20")
+        args.loose[int(m.group(1))] = float(val)
 
     if args.action == "list":
         files = sorted(RECORDED.glob("*.json")) if RECORDED.exists() else []
