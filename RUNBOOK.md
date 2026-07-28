@@ -31,7 +31,24 @@ Freezes where it is, then travels slowly to the recorded `stand` pose and holds
 30 min (change with `--minutes 60`). `--freeze-only` = stiffen in place, no travel.
 `Ctrl+C` to release early.
 
-## 3. Author a move in the simulator (no hardware touched)
+## 3. Record a move by hand (no sim — the easy way)
+
+```
+python scripts\motion\07_record_replay.py --port COM7 record hello_wave
+```
+
+Robot goes fully soft (hold him!), 3 s countdown, then move his limbs like a
+puppet — everything is recorded at 20 Hz. Press **Enter** to stop and save.
+Replay anytime (whole body stiffens, returns to the move's start, then plays):
+
+```
+python scripts\motion\07_record_replay.py --port COM7 replay hello_wave
+python scripts\motion\07_record_replay.py --port COM7 list
+```
+
+Raw motor space — no sim, no calibration involved; what you sculpt is what replays.
+
+## 3-alt. Author a move in the simulator (no hardware touched)
 
 1. Launch CoppeliaSim — **exactly one instance**, and it must be started with this
    command (a plain double-click won't open the robot port):

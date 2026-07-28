@@ -1,0 +1,9 @@
+{
+  "name": "shouldertest",
+  "frames": [
+    { "positions": { "l_shoulder_y": 0 }, "duration": 1.0 },
+    { "positions": { "l_shoulder_y": -40 }, "duration": 2.0 },
+    { "positions": { "l_shoulder_y": -40 }, "duration": 1.5 },
+    { "positions": { "l_shoulder_y": 0 }, "duration": 2.0 }
+  ]
+}

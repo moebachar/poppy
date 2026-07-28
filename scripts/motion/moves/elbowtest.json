@@ -1,0 +1,9 @@
+{
+  "name": "elbowtest",
+  "frames": [
+    { "positions": { "l_elbow_y": 0 }, "duration": 1.0 },
+    { "positions": { "l_elbow_y": -30 }, "duration": 2.0 },
+    { "positions": { "l_elbow_y": -30 }, "duration": 1.5 },
+    { "positions": { "l_elbow_y": 0 }, "duration": 2.0 }
+  ]
+}
