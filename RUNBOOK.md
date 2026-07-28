@@ -114,8 +114,10 @@ To re-record the stance that anchors all moves: sculpt the robot by hand, then
 ## Known quirks (this 2013 unit)
 
 - `r_elbow_y` (motor 54) is dead — sim moves may use it; hardware skips it.
-- Absolute poses don't match the sim exactly yet (old assembly offsets) — moves are
-  applied as *changes* from the move's first frame, anchored on the `stand` pose.
-  Zero calibration will fix this properly.
+- Left-arm motors **41, 42, 44 run in multi-turn mode** (fix for the encoder-seam
+  assembly problem; check with `python scripts\motion\dxl_multiturn.py --port COM7 status`).
+  Record/replay (07), stand-still (03) and poses (04) handle this automatically.
+  The sim-execute script (06) skips these three motors until it's updated —
+  use record/replay for left-arm moves.
 - If CoppeliaSim says `failed starting a remote API server on port 19997`: another
   CoppeliaSim instance is running — close ALL of them and relaunch with the command above.

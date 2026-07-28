@@ -17,8 +17,20 @@ from pathlib import Path
 
 import pypot.dynamixel
 
+from dxl_multiturn import SEAM_IDS, present_deg, goto_deg, rebase
+from dxl_multiturn import freeze as mt_freeze
+
 POSES_DIR = Path(__file__).parent / "poses"
 TEMP_HARD = 52
+
+
+def read_positions(dxl, ids):
+    """Present positions; seam motors via raw multi-turn reads."""
+    pos = dict(zip(ids, dxl.get_present_position(ids)))
+    for i in ids:
+        if i in SEAM_IDS:
+            pos[i] = present_deg(dxl, i)
+    return pos
 
 
 def main():
@@ -39,7 +51,7 @@ def main():
         ids = [i for i in dxl.scan(list(range(60))) if i < 250]
 
         if args.action == "save":
-            pos = dict(zip(ids, dxl.get_present_position(ids)))
+            pos = read_positions(dxl, ids)
             POSES_DIR.mkdir(exist_ok=True)
             pose_file.write_text(json.dumps(
                 {"name": args.name, "saved": time.strftime("%Y-%m-%d %H:%M"),
@@ -56,7 +68,10 @@ def main():
         target = {int(k): v for k, v in
                   json.loads(pose_file.read_text())["positions"].items()}
         target = {i: p for i, p in target.items() if i in ids}
-        current = dict(zip(ids, dxl.get_present_position(ids)))
+        current = read_positions(dxl, ids)
+        for i in target:   # seam motors: nearest whole-turn representation
+            if i in SEAM_IDS:
+                target[i] = rebase(target[i], current[i])
         too_far = {i: round(abs(current[i] - target[i]), 1)
                    for i in target if abs(current[i] - target[i]) > args.max_travel}
         if too_far and not args.force:
@@ -65,14 +80,20 @@ def main():
         try:
             for i in target:                      # freeze at current first (no jump)
                 dxl.set_moving_speed({i: args.speed})
-                dxl.set_goal_position({i: current[i]})
-                dxl.enable_torque((i,))
+                if i in SEAM_IDS:
+                    mt_freeze(dxl, i)
+                else:
+                    dxl.set_goal_position({i: current[i]})
+                    dxl.enable_torque((i,))
             time.sleep(0.2)
             for i in target:                      # then head for the pose, slowly
-                dxl.set_goal_position({i: target[i]})
+                if i in SEAM_IDS:
+                    goto_deg(dxl, i, target[i])
+                else:
+                    dxl.set_goal_position({i: target[i]})
             t_end = time.time() + 20
             while time.time() < t_end:
-                now = dict(zip(ids, dxl.get_present_position(ids)))
+                now = read_positions(dxl, ids)
                 err = max(abs(now[i] - target[i]) for i in target)
                 if err < 3:
                     break

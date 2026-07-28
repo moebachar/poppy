@@ -103,6 +103,11 @@ def main():
     t0, first = frames[0]
     with pypot.dynamixel.DxlIO(args.port, baudrate=args.baud) as dxl:
         present = [i for i in dxl.scan(list(range(60))) if i < 250]
+        seam = [i for i in present if i in (41, 42, 44)]
+        if seam:  # these run in multi-turn mode; pypot writes are unsafe on them
+            print(f"note: skipping seam motors {seam} — this sim pipeline is not "
+                  f"multi-turn-aware; use 07_record_replay.py for left-arm moves", flush=True)
+            present = [i for i in present if i not in seam]
 
         # robot-space frame -> raw goals: stance + sign * (pos - first_frame_pos)
         def raw_goals(pose):

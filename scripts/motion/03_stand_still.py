@@ -17,8 +17,20 @@ from pathlib import Path
 
 import pypot.dynamixel
 
+from dxl_multiturn import SEAM_IDS, present_deg, goto_deg, rebase
+from dxl_multiturn import freeze as mt_freeze
+
 POSES_DIR = Path(__file__).parent / "poses"
 TEMP_HARD = 52
+
+
+def read_positions(dxl, ids):
+    """Present positions; seam motors via raw multi-turn reads."""
+    pos = dict(zip(ids, dxl.get_present_position(ids)))
+    for i in ids:
+        if i in SEAM_IDS:
+            pos[i] = present_deg(dxl, i)
+    return pos
 
 
 def main():
@@ -37,7 +49,7 @@ def main():
     with pypot.dynamixel.DxlIO(args.port, baudrate=args.baud) as dxl:
         ids = [i for i in dxl.scan(list(range(60))) if i < 250]
         print(f"motors: {ids}", flush=True)
-        current = dict(zip(ids, dxl.get_present_position(ids)))
+        current = read_positions(dxl, ids)
 
         if args.freeze_only:
             target = dict(current)
@@ -48,6 +60,9 @@ def main():
             if missing:
                 print(f"note: no saved position for {missing}, freezing them in place", flush=True)
                 target.update({i: current[i] for i in missing})
+            for i in target:   # seam motors: nearest whole-turn representation
+                if i in SEAM_IDS:
+                    target[i] = rebase(target[i], current[i])
             too_far = {i: round(abs(current[i] - target[i]), 1)
                        for i in target if abs(current[i] - target[i]) > args.max_travel}
             if too_far and not args.force:
@@ -56,8 +71,11 @@ def main():
         try:
             for i in ids:  # freeze at current first: no jump at torque-on
                 dxl.set_moving_speed({i: args.speed})
-                dxl.set_goal_position({i: current[i]})
-                dxl.enable_torque((i,))
+                if i in SEAM_IDS:
+                    mt_freeze(dxl, i)
+                else:
+                    dxl.set_goal_position({i: current[i]})
+                    dxl.enable_torque((i,))
             time.sleep(0.3)
             off = [i for i, on in zip(ids, dxl.is_torque_enabled(ids)) if not on]
             print(f"TORQUE READ-BACK: {'ALL ON' if not off else f'STILL OFF: {off}'}", flush=True)
@@ -65,11 +83,14 @@ def main():
             if not args.freeze_only:
                 print("traveling to pose...", flush=True)
                 for i in ids:
-                    dxl.set_goal_position({i: target[i]})
+                    if i in SEAM_IDS:
+                        goto_deg(dxl, i, target[i])
+                    else:
+                        dxl.set_goal_position({i: target[i]})
                 t_end = time.time() + 30
                 err = 999
                 while time.time() < t_end:
-                    now = dict(zip(ids, dxl.get_present_position(ids)))
+                    now = read_positions(dxl, ids)
                     err = max(abs(now[i] - target[i]) for i in ids)
                     if err < 3:
                         break
