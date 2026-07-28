@@ -111,19 +111,35 @@ def do_record(dxl, present, args):
         print(f"RECORDING at {args.hz} Hz — press Enter to stop.", flush=True)
         frames, t0 = [], time.time()
         period = 1.0 / args.hz
+        # grab-latch: LOCKED joints hold their goal rigid (no gravity ratchet);
+        # pushing one past the deadband unlocks it — it then follows the hand
+        # freely (goal := present, near-zero drag) until still for ~0.7 s,
+        # when it re-locks where you left it.
         goals = positions()
+        last = dict(goals)
+        unlocked = {i: False for i in present}
+        still = {i: 0 for i in present}
+        relatch_ticks = max(int(0.7 * args.hz), 3)
         while not stop.is_set() and time.time() - t0 < args.max_seconds:
             tick = time.time()
             pos = positions()
             for i in present:
-                # goal follows the hand ONLY on deliberate displacement —
-                # a deadband, so gravity sag can't ratchet the pose down
-                if abs(pos[i] - goals[i]) > args.follow_deadband:
+                if not unlocked[i] and abs(pos[i] - goals[i]) > args.follow_deadband:
+                    unlocked[i] = True
+                    still[i] = 0
+                if unlocked[i]:
                     goals[i] = pos[i]
                     if i in SEAM_IDS:
                         goto_deg(dxl, i, pos[i])
                     else:
                         dxl.set_goal_position({i: pos[i]})
+                    if abs(pos[i] - last[i]) < 0.15:
+                        still[i] += 1
+                        if still[i] >= relatch_ticks:
+                            unlocked[i] = False
+                    else:
+                        still[i] = 0
+                last[i] = pos[i]
             frames.append({"t": round(tick - t0, 3),
                            "pos": {str(i): round(p, 2) for i, p in pos.items()}})
             time.sleep(max(0, period - (time.time() - tick)))
