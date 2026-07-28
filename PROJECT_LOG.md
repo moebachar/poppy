@@ -111,3 +111,29 @@ Artifacts: `hardware/motor_status.md` (all verdicts) · scanner patched to ignor
 - **Aesthetic gap + root cause:** waving hand pointed down — the stance anchor ≠ sim rest pose. Attempting to sculpt the real robot into the sim rest revealed it **cannot physically reach it: probable 2013 assembly error** (horns mounted off-spline — consistent with the ~90° shoulder offset measured at noon). → **Tomorrow's lead: proper per-motor zero calibration** per the cached official assembly guide (horn alignment + poppy-configure), which would make absolute sim posing exact and retire the delta-anchor workaround.
 - End-of-day state: all motors compliant, hottest 45 °C, powered down. ⚠️ final scan saw only 10/12 motors — likely a connector nudged during sculpting; re-seat and rescan tomorrow. Motor 54 swap still pending (needs PH0/PH1 precision screwdriver).
 - **Day scorecard, from 12 years of dust: bus revived · 12/13 motors healthy · the one burned motor identified · first motion · standing · pose record/replay · full sim-to-robot authoring pipeline.**
+
+---
+
+## 2026-07-28 — Session 5 — ⭐ ROOT CAUSE FOUND (encoder seam) · multi-turn fix · teach-mode record/replay pipeline DONE ⭐
+
+**Morning:** clean 12/12 scan (yesterday's "10/12" self-resolved — sleepy connector). `RUNBOOK.md` created (daily commands).
+
+**Elbow surgery (operator-led):** operator diagnosed the elbows as assembled inverted (masked by a twisted arm) and physically flipped them. Stance re-captured post-flip; elbow direction re-verified on hardware (`elbowtest` mini-move).
+
+**Sim pipeline hits a wall:** operator's wave moved the arm back, not out. `sim/play_move.py` built (replay any exported move in CoppeliaSim = ground truth); sim playback correct → hardware mapping at fault. `shouldertest` mini-move: real arm moved opposite to sim **under BOTH signs of l_shoulder_y** — physically impossible via the delta path → something deeper than signs.
+
+**⭐ THE ROOT CAUSE (explains 2 days of chaos):** analysis of the first demonstration recording showed motors **41, 42, 44 working arcs cross the MX-28 encoder seam** (±180° register rollover); **42's rest position sits exactly ON it** (readings flicker ±178↔−178 — same physical spot). Joint mode can't be *commanded* across the seam (long-way-around sweeps; pypot clamps writes into one turn). Retroactively explains: the 302°-away replay refusal, the wave's shoulder barely lifting (goals clamped at the seam), the "signs flipped vs config" confusion, and the shouldertest paradox. A 2013 horn-mounting error is the ultimate cause.
+
+**Fix — multi-turn mode (operator vetoed re-horn surgery, software-only):**
+- `scripts/motion/dxl_multiturn.py`: raw register IO over pypot's packet layer (pypot converters clamp goals to one turn and misread negative registers). EEPROM CW=CCW=4095 on **41/42/44 only** (originals: cw=0, ccw=4095 — `disable` restores). Multi-turn offset 0, res divider 1. CLI: status/enable/disable/jog/watch.
+- **Verified live** (operator moved the arm during a `watch` stream): counter counts continuously across ±180 in both directions. Outward on 42 = raw **decreasing** (my first jog guessed + and gently pressed his ribs — 3° stall, no harm). "Mystery 17° drift" = gear friction holding the soft arm cocked; not a fault.
+- Seam-aware updates: `07` (unwrap recorded series + rebase by whole turns to current reading — counter re-bases each power-up), `03`/`04` (raw freeze/read/goto + rebase for seam ids), `06` (skips seam motors; sim pipeline PARKED until seam-aware — record/replay is the primary authoring path now).
+
+**Teach-mode record/replay (the operator's requested workflow, iterated live to final form):**
+- `07_record_replay.py record <name>`: whole body **rigid at 100%** holding the stand pose (fixed goals — no gravity ratchet), only motors named `--m<ID> <pct>` go loose (lowered torque ceiling + goal-follows-hand every tick). Enter stops, saves raw@20 Hz JSON to `moves/recorded/`. Iterations that died on the bench: all-soft puppet (body flops), group stiffness + goal-follow (gravity ratchet — goal chased the sag), deadband follow (constant 4° drag), grab-latch (shoulders mushy). Final explicit per-motor design is the operator's spec and **works well**.
+- `replay <name>`: full-strength freeze → guarded travel to first frame → 20 Hz stream (frame-drop on lag, temp watchdog) → hold → release. `list` shows the library.
+- Library so far: `hello_wave` (8.1 s), `secret_move` (24.6 s), `arms_only`.
+
+**Operator's declared goal:** a library of **12–15 named moves** to choose from and play. **Deferred by operator** until motor 54 is replaced (screwdriver still missing; expected in the coming days). Next mission: operator will announce.
+
+**Open items:** motor 54 swap (then ID 1→54, baud→1M, 13/13 rescan) · sim pipeline revival = optional later (needs seam-aware 06 + per-joint sign verification) · zero calibration only if we ever re-horn.

@@ -31,22 +31,48 @@ Freezes where it is, then travels slowly to the recorded `stand` pose and holds
 30 min (change with `--minutes 60`). `--freeze-only` = stiffen in place, no travel.
 `Ctrl+C` to release early.
 
-## 3. Record a move by hand (no sim — the easy way)
+## 3. Record a move by teaching (THE workflow for the move library)
 
 ```
-python scripts\motion\07_record_replay.py --port COM7 record hello_wave
+python scripts\motion\07_record_replay.py --port COM7 record wave2 --m41 20 --m42 20 --m43 20 --m44 20
 ```
 
-Robot goes fully soft (hold him!), 3 s countdown, then move his limbs like a
-puppet — everything is recorded at 20 Hz. Press **Enter** to stop and save.
-Replay anytime (whole body stiffens, returns to the move's start, then plays):
+What happens: the robot stiffens, settles into the `stand` pose, then holds it
+**rigid** — except the motors you named with `--m<ID> <stiffness>`, which go
+loose and follow your hand (what you move, stays). Sculpt the move at the speed
+you want it replayed; press **Enter** to stop and save. Recording is raw motor
+space @ 20 Hz — what you taught is exactly what replays.
+
+Motor ids for the `--m` flags:
+
+| id | joint | id | joint |
+|---|---|---|---|
+| 41 | left shoulder swing | 51 | right shoulder swing |
+| 42 | left shoulder lift | 52 | right shoulder lift |
+| 43 | left upper-arm twist | 53 | right upper-arm twist |
+| 44 | left elbow | 54 | right elbow (DEAD, pending swap) |
+| 33 | waist turn | 34 / 35 | chest lean / tilt |
+| 36 | head turn | 37 | head nod |
+
+Stiffness guide: `10` ≈ floppy, `20` ≈ easy to move (default choice), `30` ≈
+noticeable resistance. A loosened joint slowly sinks under gravity if you let
+go mid-air — keep a hand on raised limbs, or the sag becomes part of the move.
+
+Replay and library:
 
 ```
-python scripts\motion\07_record_replay.py --port COM7 replay hello_wave
+python scripts\motion\07_record_replay.py --port COM7 replay wave2
 python scripts\motion\07_record_replay.py --port COM7 list
 ```
 
-Raw motor space — no sim, no calibration involved; what you sculpt is what replays.
+Replay = full-strength: freeze → travel slowly to the move's start → play →
+hold 10 s → release. Ctrl+C = instant soft, always.
+
+Library conventions (goal: 12–15 named moves):
+- One short, meaningful name per move (`high_five`, `nod_yes`, `wave2`…).
+- Start AND end every move at the stand pose — replays chain cleanly.
+- Re-record under the same name to replace a move; git history keeps old takes.
+- Recordings live in `scripts\motion\moves\recorded\` — commit after each session.
 
 ## 3-alt. Author a move in the simulator (no hardware touched)
 
