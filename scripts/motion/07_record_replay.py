@@ -111,14 +111,19 @@ def do_record(dxl, present, args):
         print(f"RECORDING at {args.hz} Hz — press Enter to stop.", flush=True)
         frames, t0 = [], time.time()
         period = 1.0 / args.hz
+        goals = positions()
         while not stop.is_set() and time.time() - t0 < args.max_seconds:
             tick = time.time()
             pos = positions()
-            for i in present:      # goal follows the hand: what you move, stays
-                if i in SEAM_IDS:
-                    goto_deg(dxl, i, pos[i])
-                else:
-                    dxl.set_goal_position({i: pos[i]})
+            for i in present:
+                # goal follows the hand ONLY on deliberate displacement —
+                # a deadband, so gravity sag can't ratchet the pose down
+                if abs(pos[i] - goals[i]) > args.follow_deadband:
+                    goals[i] = pos[i]
+                    if i in SEAM_IDS:
+                        goto_deg(dxl, i, pos[i])
+                    else:
+                        dxl.set_goal_position({i: pos[i]})
             frames.append({"t": round(tick - t0, 3),
                            "pos": {str(i): round(p, 2) for i, p in pos.items()}})
             time.sleep(max(0, period - (time.time() - tick)))
@@ -233,6 +238,8 @@ def main():
                     help="teach-mode torque %% for waist/bust/head")
     ap.add_argument("--arm-stiffness", type=float, default=25.0,
                     help="teach-mode torque %% for arms")
+    ap.add_argument("--follow-deadband", type=float, default=4.0,
+                    help="degrees a joint must be pushed before its goal follows")
     ap.add_argument("--max-seconds", type=float, default=120.0)
     ap.add_argument("--hold-seconds", type=float, default=10.0)
     ap.add_argument("--max-travel", type=float, default=100.0)
