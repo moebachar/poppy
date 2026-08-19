@@ -1,0 +1,20 @@
+/* POPPY/DECK — surface & color tokens (DESIGN.md, verbatim). Dark only. */
+:root {
+  --bg:        #0B0F13;   /* the one background. near-black, blue-leaning     */
+  --panel:     #0E141A;   /* register/side panels, 1 step up                  */
+  --rule:      #1E2A33;   /* 1px hairlines that structure the whole layout    */
+  --rule-hi:   #2E4152;   /* hovered/active hairline                          */
+  --ink:       #C9D6DD;   /* primary text                                     */
+  --ink-dim:   #5C7280;   /* secondary text, units, dead rows                 */
+  --accent:    #4FC3FF;   /* THE accent. live data, focus, link status        */
+  --ok:        #43FF9E;   /* motor healthy                                    */
+  --fault:     #FF4B3B;   /* motor dead / errors                              */
+  --warn:      #FFB03A;   /* temperatures 45–51°C, record-selection amber     */
+  --rec:       #FF3B70;   /* recording state                                  */
+
+  --mono: 'IBM Plex Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  --wordmark: 'Space Grotesk', 'IBM Plex Mono', system-ui, sans-serif;
+
+  --ease-ui: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --t-ui: 140ms;
+}

@@ -161,3 +161,24 @@ Artifacts: `hardware/motor_status.md` (all verdicts) · scanner patched to ignor
 **Safety rules taught & enforced:** volts must match exactly / amps are "up to" · never barrel-into-Pi · polarity check by meter before energizing unknown adapters · photo-verify board mounting before power.
 
 **Tomorrow's opening moves:** ① buy/borrow **5 V ⎓ 2.5 A micro-USB PSU** (+ class-D amp; + PH0/PH1 driver for motor 54; optional spare microSD) · ② boot corrected card (laptop USB OK as stopgap), hotspot on, SSH in (`poppy@192.168.137.x`, key auth) · ③ venv + pypot on Pi, copy scripts/poses/moves, USB2AX into Pi, scan → replay a move from the Pi = **the brain milestone** · ④ voice via any powered 3.5 mm speaker until the amp arrives.
+
+---
+
+## 2026-07-29 — Session 6 — ⭐ POPPY TALKS: Pi brain online (parallel thread) + full voice agent ⭐
+
+**Parallel thread (head/brain agent):** Pi 3 online — SSH `poppy@poppy.local` (org network, key-only), venv `~/env` (Python 3.13.5 + pypot 5.0.2), motion stack at `/home/poppy/poppy`, USB2AX on the Pi, clean 12/12 scans from the Pi, head camera capturing (first photos from the Pi in `hardware/photos/phase3-head/`), face tracking (`08_face_track.py`) + browser face-view (`09_face_view.py`, MJPEG + optional YuNet). MAX98306 amp procured, speaker leads attached (head audio unfinished). Pi runs CPU-throttled — proper 5 V ⎓ 2.5 A PSU still missing.
+
+**This thread: the voice agent, end to end** — `perception/voice_agent.py` + `scripts/motion/10_motion_server.py` (architecture map: claude.ai artifact "Poppy Voice Agent").
+- All-OpenAI pipeline, key in `.env` (deliberately overrides the machine's corporate Azure OPENAI_* vars): hold-SPACE push-to-talk with live chunked transcription (gpt-4o-mini-transcribe) → gpt-4.1-mini with **one tool per recorded move** (required `say` arg, word budget ≈ 3 × move-seconds, spoken WHILE the body moves; successful moves skip the wrap-up round) → gpt-4o-mini-tts (echo, 1.15×, teenage-robot instructions) streamed as PCM + 30 Hz ring-mod robot effect (measured 1.4 ms per 5 s clip — free).
+- Persistent motion server, line protocol over a pipe (local COM7 or ssh to the Pi, auto-picked): awaken → settle ≤150° → head-glance mid-settle → hold stance @ 60 % torque; plays @ 100 %, 40°/s stance hops; temp watchdog 52 °C release → 45 °C auto-resume (bust_x measured at exactly 52.0 °C — the "goes soft" mystery WAS the watchdog); every exit releases.
+- Wake-up scene: greeting generated in parallel with boot, plays the instant its audio exists. Persona: Poppy, made by Mohamed Bachar (PhD student, CESI LINEACT), thankful, eager to learn; 2013/Inria lore removed by operator request.
+- Teach mode: `--m<ID> 0` = torque fully OFF now (was torque-limit-0 with electromagnetic drag). Library re-recorded: wave 4.1 s · dab 3.2 s · secret_move 4.2 s.
+- Profiling built in (`[prof]` line per turn + exit summary). Measured: stt 0.85 · brain 0.86 · tts 1.4 · move 9.6 s. Built at session end but **not re-measured**: streaming TTS (expect ~0.5 s to first sound) and 40°/s travels (expect ~6 s per wave).
+- Hardware events: 51→52 shoulder connector went sleepy (re-seat fixed — watch item; swap the cable if it recurs); long torque holds heat the chest motors. USB2AX back on the laptop at session end; the Pi's motion-server copy is stale → re-sync at next Pi power-up.
+
+---
+
+## 2026-08-19 — Session 7 (opening) — snapshot commit + new direction: realtime voice
+
+- 17-day pause (operator vacation). This commit snapshots Session 6 **plus** the in-progress parallel workstream: the motion server grew record-over-protocol (`record_start/stop/abort`) and `--telemetry` (POS @10 Hz / HEALTH JSON) feeding a new `web/` UI (`web/server.py`, CONTRACT.md, DESIGN.md); stance + moves re-recorded 2026-08-19 (`*.bak-*` now gitignored).
+- Operator verdict on voice loop v1: works, but the serial STT→brain→TTS chain is too slow — archive as-is, keep running. Next: rebuild on the **OpenAI Realtime API** (speech-to-speech, one WebSocket, server VAD, native tool calls) targeting sub-second responses and human-style interaction. Motion server + line protocol unchanged. Ring-mod cleared as a bottleneck by measurement (1.35 ms / 5 s clip).

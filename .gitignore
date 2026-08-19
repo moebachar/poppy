@@ -8,6 +8,12 @@ __pycache__/
 venv/
 .ipynb_checkpoints/
 
+# secrets
+.env
+
+# ad-hoc file backups (git history is the real backup)
+*.bak-*
+
 # OS noise
 Thumbs.db
 desktop.ini

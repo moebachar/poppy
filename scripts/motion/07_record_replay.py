@@ -108,6 +108,9 @@ def do_record(dxl, present, args):
             print("WARNING: no --m<ID> flags — every joint is rigid, nothing "
                   "will be movable by hand.", flush=True)
         for i, pct in loose.items():
+            if pct <= 0:
+                dxl.disable_torque((i,))   # 0 = truly free (coast, no drag);
+                continue                   # only gearbox friction remains
             dxl.set_moving_speed({i: 150})
             dxl.set_torque_limit({i: pct})
 
@@ -122,6 +125,8 @@ def do_record(dxl, present, args):
             tick = time.time()
             pos = positions()
             for i in loose:        # goal follows the hand: what you move, stays
+                if loose[i] <= 0:
+                    continue       # torque is off — nothing to follow
                 if i in SEAM_IDS:
                     goto_deg(dxl, i, pos[i])
                 else:
@@ -264,6 +269,8 @@ def main():
 
     with pypot.dynamixel.DxlIO(args.port, baudrate=args.baud) as dxl:
         present = [i for i in dxl.scan(list(range(60))) if i < 250]
+        if not present:
+            raise SystemExit("no motors answered the scan — is the 12 V bus powered?")
         if args.action == "record":
             do_record(dxl, present, args)
         else:

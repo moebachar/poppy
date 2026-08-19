@@ -54,9 +54,11 @@ Motor ids for the `--m` flags:
 | 33 | waist turn | 34 / 35 | chest lean / tilt |
 | 36 | head turn | 37 | head nod |
 
-Stiffness guide: `10` ≈ floppy, `20` ≈ easy to move (default choice), `30` ≈
-noticeable resistance. A loosened joint slowly sinks under gravity if you let
-go mid-air — keep a hand on raised limbs, or the sag becomes part of the move.
+Stiffness guide: `0` = completely free (torque off — no hold at all, only gear
+friction; the limb FALLS if you let go), `10` ≈ floppy, `20` ≈ easy to move
+(default choice), `30` ≈ noticeable resistance. A loosened joint sinks under
+gravity if you let go mid-air — keep a hand on raised limbs, or the sag becomes
+part of the move.
 
 Replay and library:
 
