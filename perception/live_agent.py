@@ -14,8 +14,10 @@ is (local COM port, else the Pi over ssh) and holds the stance between moves.
 The model keeps talking while the body moves.
 
 Barge-in: if you speak while Poppy speaks, playback stops and he listens.
-(With laptop mic + speakers he may hear himself — use --gate to mute the mic
-during playback if that gets chaotic.)
+With laptop mic + speakers he may hear himself — two remedies:
+  --ptt   push-to-talk: hold SPACE to speak, release to send (no VAD at all;
+          holding SPACE while he talks barges in). Zero echo.
+  --gate  keep VAD but mute the mic while he speaks (no barge-in).
 
 Needs OPENAI_API_KEY in .env at the repo root (wins over machine env vars).
 """
@@ -35,6 +37,11 @@ from pathlib import Path
 import numpy as np
 import sounddevice as sd
 import websockets
+
+try:
+    import keyboard                    # --ptt: hold-space detection
+except Exception:
+    keyboard = None
 
 ROOT = Path(__file__).resolve().parents[1]
 MOVES_DIR = ROOT / "scripts" / "motion" / "moves" / "recorded"
@@ -345,6 +352,8 @@ class Live:
         self.tool_tasks = set()          # keep refs; surface exceptions
         self.explain_pending = False     # failure speech deferred to turn end
         self.last_audio_t = 0.0          # when the speaker last emitted sound
+        self.ptt_held = False            # --ptt: SPACE currently down
+        self.ptt_ms = 0                  # audio ms sent since the press
 
     # --- audio plumbing ---
     def out_callback(self, outdata, frames, t, status):
@@ -369,7 +378,9 @@ class Live:
         await self.ws.send(json.dumps(evt))
 
     def session_payload(self):
-        if self.args.vad == "semantic":
+        if self.args.ptt:                  # manual turns: no VAD, no echo —
+            vad = None                     # the mic is only open while SPACE
+        elif self.args.vad == "semantic":  # is held
             vad = {"type": "semantic_vad", "eagerness": "medium",
                    "create_response": True, "interrupt_response": True}
         else:                              # noisy-room alternative
@@ -415,7 +426,11 @@ class Live:
         try:
             while True:
                 data = await q_in.get()
-                if self.args.gate and (self.speaking or
+                if self.args.ptt:
+                    if not self.ptt_held:
+                        continue           # mic gated shut between presses
+                    self.ptt_ms += 1000 * (len(data) // 2) // RATE
+                elif self.args.gate and (self.speaking or
                         time.monotonic() - self.last_audio_t < 0.35):
                     continue               # half-duplex: drop mic while talking
                 await self.send({"type": "input_audio_buffer.append",
@@ -423,6 +438,43 @@ class Live:
         finally:
             stream.stop()
             stream.close()
+
+    async def interrupt_playback(self, cancel):
+        """Silence Poppy now and trim his memory to what was actually heard."""
+        with self.out_lock:
+            unplayed = len(self.out_buf)
+        self.flush_output()
+        if self.cur_item and unplayed > 0:
+            played_ms = max(0, (self.cur_item_bytes - unplayed) // 48)
+            await self.send({"type": "conversation.item.truncate",
+                             "item_id": self.cur_item, "content_index": 0,
+                             "audio_end_ms": int(played_ms)})
+            self.cur_item, self.cur_item_bytes = None, 0
+        if cancel and self.active_response:
+            await self.send({"type": "response.cancel"})
+
+    async def ptt_task(self):
+        """--ptt: SPACE down = talk (and barge in), SPACE up = send."""
+        print("  hold SPACE to talk — release to send", flush=True)
+        while True:
+            pressed = keyboard.is_pressed("space")
+            if pressed and not self.ptt_held:
+                self.ptt_held = True
+                self.ptt_ms = 0
+                # no VAD in manual mode: cancel his speech ourselves
+                if self.speaking or self.active_response:
+                    await self.interrupt_playback(cancel=True)
+                print("  REC * (release SPACE to send)", flush=True)
+            elif not pressed and self.ptt_held:
+                self.ptt_held = False
+                if self.ptt_ms < 150:      # a tap: nothing worth committing
+                    await self.send({"type": "input_audio_buffer.clear"})
+                else:
+                    self.t_speech_stopped = time.time()
+                    self.first_audio_seen = False
+                    await self.send({"type": "input_audio_buffer.commit"})
+                    await self.send({"type": "response.create"})
+            await asyncio.sleep(0.03)
 
     async def run_tool(self, call_id, name, ws):
         if name == "stop_moving":
@@ -507,19 +559,9 @@ class Live:
 
         elif t == "input_audio_buffer.speech_started":
             if self.speaking or self.active_response:
-                with self.out_lock:
-                    unplayed = len(self.out_buf)
-                self.flush_output()        # barge-in: shut up instantly;
-                # the server cancels its own response (interrupt_response).
-                # Truncate ONLY if something actually went unheard — else we
-                # would delete a fully-played reply from his memory:
-                if self.cur_item and unplayed > 0:
-                    played_ms = max(0, (self.cur_item_bytes - unplayed) // 48)
-                    await self.send({"type": "conversation.item.truncate",
-                                     "item_id": self.cur_item,
-                                     "content_index": 0,
-                                     "audio_end_ms": int(played_ms)})
-                    self.cur_item, self.cur_item_bytes = None, 0
+                # barge-in: shut up instantly; the server cancels its own
+                # response (interrupt_response), we align his memory
+                await self.interrupt_playback(cancel=False)
 
         elif t == "input_audio_buffer.speech_stopped":
             self.t_speech_stopped = time.time()
@@ -611,6 +653,9 @@ class Live:
                                          callback=self.out_callback)
             out_stream.start()
             mic = asyncio.create_task(self.mic_task())
+            tasks = [mic]
+            if self.args.ptt:
+                tasks.append(asyncio.create_task(self.ptt_task()))
             try:
                 configured = False
                 async for message in ws:
@@ -644,11 +689,12 @@ class Live:
                         continue
                     await self.handle(evt)
             finally:
-                mic.cancel()
-                for r in await asyncio.gather(mic, return_exceptions=True):
+                for tk in tasks:
+                    tk.cancel()
+                for r in await asyncio.gather(*tasks, return_exceptions=True):
                     if isinstance(r, Exception) and \
                             not isinstance(r, asyncio.CancelledError):
-                        print(f"  [mic] task died: {r!r}", flush=True)
+                        print(f"  [audio] task died: {r!r}", flush=True)
                 out_stream.stop()
                 out_stream.close()
 
@@ -684,6 +730,8 @@ def main():
     ap.add_argument("--vad", choices=("semantic", "server"), default="semantic")
     ap.add_argument("--robot-fx", type=float, default=0.25,
                     help="robot-voice ring-mod depth 0..1 (0 = off)")
+    ap.add_argument("--ptt", action="store_true",
+                    help="push-to-talk: hold SPACE to speak (no VAD, no echo)")
     ap.add_argument("--gate", action="store_true",
                     help="half-duplex: mute the mic while Poppy speaks")
     ap.add_argument("--ws-url", default=WS_URL)
@@ -717,9 +765,14 @@ def main():
         return
     if not api_key:
         raise SystemExit("OPENAI_API_KEY missing — put it in .env at repo root")
+    if args.ptt and keyboard is None:
+        raise SystemExit("--ptt needs the 'keyboard' package "
+                         "(.venv\\Scripts\\pip install keyboard)")
 
-    print(f"POPPY LIVE — {len(moves)} moves · {args.model} · voice {args.voice}"
-          + (" · GATED" if args.gate else " · full duplex"))
+    mode = ("push-to-talk (hold SPACE)" if args.ptt
+            else "GATED half-duplex" if args.gate else "full duplex")
+    print(f"POPPY LIVE — {len(moves)} moves · {args.model} · "
+          f"voice {args.voice} · {mode}")
 
     motion = Motion()
     if not (args.no_robot or args.selftest):
