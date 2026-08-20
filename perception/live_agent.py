@@ -19,6 +19,14 @@ With laptop mic + speakers he may hear himself — two remedies:
           holding SPACE while he talks barges in). Zero echo.
   --gate  keep VAD but mute the mic while he speaks (no barge-in).
 
+Who is talking (perception/identity.py): every utterance is voice-matched
+against enrolled people; the model is told who spoke, asks strangers their
+name (enroll_speaker), and keeps per-person memories (remember_person),
+mined again from the transcript when the session ends. Enroll voices with
+    python perception\identity.py enroll <name>
+Needs torch+speechbrain (pip install torch torchaudio speechbrain);
+without them the agent still runs, just voice-blind. --no-id disables.
+
 Needs OPENAI_API_KEY in .env at the repo root (wins over machine env vars).
 """
 import argparse
@@ -32,6 +40,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -42,6 +51,13 @@ try:
     import keyboard                    # --ptt: hold-space detection
 except Exception:
     keyboard = None
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    import identity as ident           # voiceprints + per-person memory
+except Exception as _e:
+    ident = None
+    _ident_err = repr(_e)
 
 ROOT = Path(__file__).resolve().parents[1]
 MOVES_DIR = ROOT / "scripts" / "motion" / "moves" / "recorded"
@@ -54,13 +70,13 @@ WS_URL = "wss://api.openai.com/v1/realtime"
 INSTRUCTIONS = """\
 You are Poppy — a humanoid robot: a torso with two arms and a head, on a
 suction-cup base on a desk. No legs, and proud of it. You were made by
-Mohamed Bachar, a PhD student at the CESI LINEACT research lab. You are
-deeply thankful to him for making you, and you can't wait to learn
-everything about this world.
+Mohamed, a PhD student at the CESI LINEACT research lab. Mohamed has 
+a wife named Hiba, he loves her so much and calls here bascuta You are
+thankful to him for making you, and you want to learn more about this world.
 
 Personality: curious, warm, playful, slightly cheeky — a young robot
 discovering the world. Voice: an enthusiastic teenage boy, lively pace.
-Keep every reply SHORT — one to three spoken sentences. Always answer in
+Keep every reply SHORT — one to two spoken sentences. Always answer in
 the language the human spoke (usually French or English).
 
 Your body, honestly: 13 servo motors. Your right elbow motor is dead and
@@ -85,6 +101,21 @@ Movement rules — IMPORTANT:
   records while he sculpts the move).
 - If the human tells you to stop while your body is moving, call
   stop_moving IMMEDIATELY, before saying anything.
+
+Who you are talking to:
+- System notes like "[voice-id] ..." tell you who just spoke, recognized by
+  voice. Trust them. Several people may be in the room — track who said
+  what, and address people by name naturally (don't overdo it).
+- When a note says the voice is UNKNOWN, weave a friendly "and who might
+  you be?" into your reply — once, not every turn. The moment they give
+  their name, call enroll_speaker with it so you remember their voice
+  forever. Also call enroll_speaker when you called someone by the wrong
+  name and they correct you.
+- When you learn something lasting about a person (their work, tastes,
+  relationships, a running joke), call remember_person — silently, never
+  announce that you are saving a memory.
+- Notes marked "(probably)" are a guess — you may gently confirm ("that's
+  you, Mohamed, right?") when it matters.
 """
 
 
@@ -136,6 +167,31 @@ def build_tools(moves):
                         "body eases back to the stance. Call this the instant "
                         "the human asks you to stop."),
         "parameters": {"type": "object", "properties": {}, "required": []},
+    })
+    tools.append({
+        "type": "function",
+        "name": "enroll_speaker",
+        "description": ("Remember the CURRENT speaker's voice under their "
+                        "name. Call when an unknown voice tells you their "
+                        "name, or when you misnamed someone and they correct "
+                        "you. From then on you will recognize them."),
+        "parameters": {"type": "object", "properties": {
+            "name": {"type": "string",
+                     "description": "their first name, as they said it"}},
+            "required": ["name"]},
+    })
+    tools.append({
+        "type": "function",
+        "name": "remember_person",
+        "description": ("Silently store a lasting fact about a person (their "
+                        "work, tastes, relationships, running jokes). Use for "
+                        "things worth recalling weeks later, not small talk."),
+        "parameters": {"type": "object", "properties": {
+            "name": {"type": "string", "description": "who it is about"},
+            "fact": {"type": "string",
+                     "description": "one short sentence, e.g. 'is defending "
+                                    "her thesis in October'"}},
+            "required": ["name", "fact"]},
     })
     return tools
 
@@ -311,7 +367,7 @@ class Motion:
 
 
 # ------------------------------------------------------------ profiling ----
-PROF = {"response": [], "move": [], "turns": 0}
+PROF = {"response": [], "move": [], "voice-id": [], "turns": 0}
 
 
 def prof_summary():
@@ -319,7 +375,7 @@ def prof_summary():
         return
     print(f"\n=== {PROF['turns']} responses "
           f"(response = your silence -> Poppy's first sound) ===")
-    for op in ("response", "move"):
+    for op in ("response", "move", "voice-id"):
         vals = PROF[op]
         if vals:
             print(f"  {op:9s} n={len(vals):3d}  avg {sum(vals)/len(vals):5.2f}s"
@@ -354,6 +410,37 @@ class Live:
         self.last_audio_t = 0.0          # when the speaker last emitted sound
         self.ptt_held = False            # --ptt: SPACE currently down
         self.ptt_ms = 0                  # audio ms sent since the press
+        self.ptt_serial_before = 0       # turn counter before this press
+
+        # --- who is talking (perception/identity.py) ---
+        self.id_on = (ident is not None and not args.no_id
+                      and not args.selftest)
+        self.id_ever_on = self.id_on     # id_on may flip off if torch breaks
+        if self.id_on:
+            self.emb_model = ident.Embedder()
+            self.emb_model.ensure_loading()   # torch loads on a worker thread
+            self.people = ident.People()
+            self.slog = ident.SessionLog()
+        self.vbuf = bytearray()          # local copy of mic audio sent upstream
+        self.appended = 0                # total bytes ever sent this session
+        self.utt_start = None            # byte offset in vbuf: utterance start
+        self.utt_overlap = False         # Poppy was audible during utterance
+        self.early_fut = None            # embedding computed DURING the speech
+        self.session_manual = False      # latched at session.update: WE create
+        #   responses (never flips mid-session even if id_on breaks — the
+        #   server keeps create_response:false until the next connect)
+        self.turn_serial = 0             # bumps when a NEW utterance starts
+        self.user_speaking = False       # between speech_started/stopped
+        self.last_turn_embedded = False  # did the last turn yield a voiceprint
+        self.item_serial = {}            # server item_id -> turn serial
+        self.turn_speaker = {}           # turn serial -> who spoke it
+        self.pending_lines = []          # (serial, text) awaiting a name
+        self.last_speaker = None         # who the last utterance belonged to
+        self.recent_embs = deque(maxlen=6)   # (t, emb, verdict, overlap)
+        self.seen_session = set()        # people already counted this session
+        self.last_adapt = {}             # name -> t of last adaptive learn
+        self.id_note_pending = None      # printed after "you:" transcript line
+
 
     # --- audio plumbing ---
     def out_callback(self, outdata, frames, t, status):
@@ -364,6 +451,9 @@ class Live:
             self.speaking = len(self.out_buf) > 0
         if take:
             self.last_audio_t = time.monotonic()
+            if self.ptt_held or self.utt_start is not None:
+                self.utt_overlap = True    # Poppy audible mid-utterance:
+                                           # never learn from that voiceprint
         if len(take) < need:
             take = bytes(take) + b"\x00" * (need - len(take))
         outdata[:] = np.frombuffer(take, dtype=np.int16).reshape(-1, 1)
@@ -378,15 +468,23 @@ class Live:
         await self.ws.send(json.dumps(evt))
 
     def session_payload(self):
+        # VAD detects the turn but WE create the response when voice-id is
+        # up, so the [voice-id] note lands before the model answers. LATCH
+        # the choice: it must match what the server was told for the whole
+        # session, even if voice-id breaks mid-session (voice-blind then,
+        # but every turn still gets its response.create from us).
+        self.session_manual = self.id_on and not self.args.ptt
         if self.args.ptt:                  # manual turns: no VAD, no echo —
             vad = None                     # the mic is only open while SPACE
         elif self.args.vad == "semantic":  # is held
             vad = {"type": "semantic_vad", "eagerness": "medium",
-                   "create_response": True, "interrupt_response": True}
+                   "create_response": not self.session_manual,
+                   "interrupt_response": True}
         else:                              # noisy-room alternative
             vad = {"type": "server_vad", "threshold": 0.6,
                    "prefix_padding_ms": 300, "silence_duration_ms": 600,
-                   "create_response": True, "interrupt_response": True}
+                   "create_response": not self.session_manual,
+                   "interrupt_response": True}
         return {"type": "session.update", "session": {
             "type": "realtime",
             "output_modalities": ["audio"],
@@ -433,8 +531,17 @@ class Live:
                 elif self.args.gate and (self.speaking or
                         time.monotonic() - self.last_audio_t < 0.35):
                     continue               # half-duplex: drop mic while talking
+                if self.id_on:             # mirror what the server hears, so
+                    self.vbuf.extend(data)  # the turn can be voice-matched
+                    if len(self.vbuf) > 90 * RATE * 2:      # cap ~90 s
+                        cut = len(self.vbuf) - 60 * RATE * 2
+                        del self.vbuf[:cut]
+                        if self.utt_start is not None:
+                            self.utt_start = max(0, self.utt_start - cut)
+                    self.maybe_early_embed()
                 await self.send({"type": "input_audio_buffer.append",
                                  "audio": base64.b64encode(data).decode()})
+                self.appended += len(data)
         finally:
             stream.stop()
             stream.close()
@@ -459,6 +566,12 @@ class Live:
         while True:
             pressed = keyboard.is_pressed("space")
             if pressed and not self.ptt_held:
+                self.vbuf.clear()          # fresh utterance capture
+                self.utt_start, self.early_fut = 0, None
+                self.utt_overlap = self.speaking   # echo unlikely, but honest
+                self.ptt_serial_before = self.turn_serial
+                self.turn_serial += 1
+                self.user_speaking = True
                 self.ptt_held = True
                 self.ptt_ms = 0
                 # no VAD in manual mode: cancel his speech ourselves
@@ -467,17 +580,244 @@ class Live:
                 print("  REC * (release SPACE to send)", flush=True)
             elif not pressed and self.ptt_held:
                 self.ptt_held = False
+                self.user_speaking = False
                 if self.ptt_ms < 150:      # a tap: nothing worth committing
                     await self.send({"type": "input_audio_buffer.clear"})
+                    self.vbuf.clear()
+                    self.utt_start = None
+                    # no turn happened: give the serial back, so a real turn
+                    # still being identified isn't left unanswered
+                    self.turn_serial = self.ptt_serial_before
+                    if self.early_fut:
+                        self.early_fut.cancel()
+                        self.early_fut = None
                 else:
+                    pcm = bytes(self.vbuf)
+                    self.vbuf.clear()
+                    fut, self.early_fut = self.early_fut, None
+                    overlap, self.utt_overlap = self.utt_overlap, False
+                    self.utt_start = None
                     self.t_speech_stopped = time.time()
                     self.first_audio_seen = False
                     await self.send({"type": "input_audio_buffer.commit"})
-                    await self.send({"type": "response.create"})
+                    # DON'T await: a blocked poll loop would drop the first
+                    # second of an immediate re-press (mic gated on ptt_held)
+                    task = asyncio.create_task(self.id_then_respond(
+                        pcm, fut, self.ws, self.turn_serial, overlap))
+                    self.tool_tasks.add(task)
+                    task.add_done_callback(self.tool_tasks.discard)
             await asyncio.sleep(0.03)
 
-    async def run_tool(self, call_id, name, ws):
-        if name == "stop_moving":
+    # --- who is talking ---
+    async def id_then_respond(self, pcm, fut, ws, serial, overlap):
+        """Voice-match the finished utterance, whisper the result to the
+        model, then ask it to answer. ID trouble never blocks the reply.
+        `fut` is the early-embedding claimed by the caller; `serial` is the
+        utterance counter at turn end — if the user starts ANOTHER utterance
+        while we work, we skip our response.create (their next turn end
+        answers everything at once instead of talking over them)."""
+        try:
+            if ws is self.ws:              # not across a reconnect
+                await self.identify(pcm, fut, ws, serial, overlap)
+            elif fut:
+                fut.cancel()
+        except Exception as e:
+            print(f"  [id] identification failed ({e!r})", flush=True)
+        finally:
+            # no voiceprint this turn (too short / model down) — the previous
+            # speaker carries over, which is better than a fresh wrong guess
+            if self.id_ever_on:
+                self.turn_speaker.setdefault(serial, self.last_speaker)
+                self.resolve_lines(serial)
+        if ws is not self.ws or serial != self.turn_serial:
+            return
+        try:
+            if self.active_response:
+                # a response slipped in during identification (deferred
+                # failure explanation, late create): the user's new turn wins
+                await self.interrupt_playback(cancel=True)
+            await self.send({"type": "response.create"})
+        except websockets.ConnectionClosed:
+            pass
+
+    def resolve_lines(self, serial=None, force=False):
+        """Write transcript lines to the session log once their speaker is
+        known. Transcription is async: the text often arrives BEFORE the
+        voice match, and mislabeled lines would become wrong memories."""
+        if not self.id_ever_on:            # (id_on may be off: model died —
+            return                         #  the transcript is still worth it)
+        keep = []
+        for s, text in self.pending_lines:
+            who = self.turn_speaker.get(s)
+            if who is None and not (force or (serial is not None
+                                              and s < serial)):
+                keep.append((s, text))     # still waiting on its identity
+                continue
+            self.slog.add(who or self.last_speaker or "someone", text)
+        self.pending_lines = keep
+        for s in [k for k in self.turn_speaker if k < self.turn_serial - 3]:
+            self.turn_speaker.pop(s, None)
+        if len(self.item_serial) > 24:
+            for k in list(self.item_serial)[:12]:
+                self.item_serial.pop(k, None)
+
+    def maybe_early_embed(self):
+        """Embedding costs ~0.5-1 s of CPU — start it ~2 s INTO the speech
+        (the speaker of the first seconds is the speaker of the turn), so
+        the result is usually ready the moment the person stops talking."""
+        if (self.early_fut is not None or self.utt_start is None
+                or not self.id_on or not self.emb_model.ready):
+            return
+        if len(self.vbuf) - self.utt_start >= int(2.2 * RATE) * 2:
+            head = np.frombuffer(
+                bytes(self.vbuf[self.utt_start:
+                                self.utt_start + 4 * RATE * 2]), dtype=np.int16)
+            if len(ident.speech_only(head)) < ident.MIN_ID_SECONDS * RATE:
+                return                     # mostly silence so far — wait
+            self.early_fut = asyncio.create_task(
+                asyncio.to_thread(self.emb_model.embed, head))
+
+    async def identify(self, pcm, fut, ws, serial, overlap):
+        self.last_turn_embedded = False
+        if not self.id_on:
+            if fut:
+                fut.cancel()
+            return
+        if not self.emb_model.ready:
+            if self.emb_model.err:
+                self.id_on = False         # torch/model broke: go voice-blind
+                                           # (session_manual stays latched, so
+                                           # turns still get response.create)
+            if fut:
+                fut.cancel()
+            return
+        t0 = time.time()
+        emb = None
+        if fut is not None:                # computed while they were talking
+            try:
+                emb = await fut
+            except (asyncio.CancelledError, Exception):
+                emb = None                 # fall back to embedding now
+        if emb is None:
+            pcm_np = np.frombuffer(pcm[:8 * RATE * 2], dtype=np.int16)
+            # gate on NET speech: VAD padding and trailing silence must not
+            # buy a junk embedding the length test would otherwise pass
+            voiced = await asyncio.to_thread(ident.speech_only, pcm_np)
+            if len(voiced) < ident.MIN_ID_SECONDS * RATE:
+                return                     # too short to judge — carry over
+            emb = await asyncio.to_thread(
+                self.emb_model.embed, pcm_np[:4 * RATE])
+        self.last_turn_embedded = True
+        name, score, verdict, margin = self.people.match(emb)
+        PROF["voice-id"].append(time.time() - t0)
+        same_stranger = (verdict in ("unknown", "nobody-enrolled")
+                         and any(v in ("unknown", "nobody-enrolled")
+                                 and float(e @ emb) > 0.5
+                                 for _, e, _, _ in self.recent_embs))
+        self.recent_embs.append((time.monotonic(), emb, verdict, overlap))
+
+        if verdict == "confident":
+            note = f"[voice-id] That was {name} speaking."
+            self.last_speaker = name
+            if name not in self.seen_session:
+                self.seen_session.add(name)
+                self.people.saw(name)
+            # learn from this voice — but only well clear of the accept
+            # threshold, never while Poppy's own speaker was bleeding into
+            # the mic, and at most once per few minutes per person
+            if (score >= ident.T_ADAPT and margin >= ident.MARGIN_ADAPT
+                    and not overlap     # snapshot: self.utt_overlap may
+                                        # already belong to the NEXT turn
+                    and time.monotonic() - self.last_adapt.get(name, 0) > 180):
+                self.last_adapt[name] = time.monotonic()
+                self.people.enroll(name, [emb], adaptive=True)
+        elif verdict == "tentative":
+            note = (f"[voice-id] That was (probably) {name} — "
+                    f"the voice match is uncertain.")
+            self.last_speaker = name
+        elif same_stranger:
+            note = ("[voice-id] The same unrecognized voice as before is "
+                    "speaking.")
+            self.last_speaker = "stranger"
+        else:
+            note = ("[voice-id] An UNKNOWN voice — nobody whose voice you "
+                    "know. If it fits the conversation, ask who they are; "
+                    "when they give a name, call enroll_speaker.")
+            self.last_speaker = "stranger"
+        self.turn_speaker[serial] = self.last_speaker
+        if ws is not self.ws:              # reconnected during the embed:
+            return                         # that conversation no longer exists
+        self.id_note_pending = (serial, f"{name} ({score:.2f})" if name
+                                else f"stranger (best {score:.2f})")
+        await self.send({"type": "conversation.item.create", "item": {
+            "type": "message", "role": "system",
+            "content": [{"type": "input_text", "text": note}]}})
+
+    def tool_enroll(self, who):
+        who = " ".join(str(who).split())[:40]
+        if not self.id_on:
+            return "FAILED: voice memory is offline right now."
+        if not who:
+            return "FAILED: you must pass their name."
+        if who.lower() in ident.RESERVED:
+            return (f"FAILED: '{who}' is not a person's name — ask for the "
+                    f"name they actually go by.")
+        if not self.last_turn_embedded or not self.recent_embs:
+            # their name came in an utterance too short to voiceprint — any
+            # older embedding could belong to someone ELSE entirely
+            return ("FAILED: their last words were too short to capture the "
+                    "voice — ask them to say one more FULL sentence, then "
+                    "call enroll_speaker again.")
+        now = time.monotonic()
+        # bind the voice that JUST spoke — last_turn_embedded guarantees the
+        # newest entry is from the utterance that triggered this call, even
+        # when it confidently mis-matched someone ("I'm not Mohamed, I'm
+        # Karim!"). Echo-contaminated samples never become permanent prints.
+        newest = self.recent_embs[-1][1]
+        embs = [e for t, e, _, ov in self.recent_embs
+                if now - t < 180 and not ov and float(e @ newest) > 0.5][-3:]
+        if not embs:
+            embs = [newest]
+        before = self.people.get(who)
+        slug = self.people.enroll(who, embs, distinct=True)
+        final = self.people.people[slug]["name"]
+        self.last_speaker = final
+        self.seen_session.add(final)
+        print(f"  [id] enrolled {final} ({len(embs)} voiceprints)", flush=True)
+        if final != who:                   # name taken by a different voice
+            return (f"Voice saved. Someone else named {who} is already known, "
+                    f"so this one is stored as '{final}' — mention that "
+                    f"lightly and use it from now on.")
+        if before is not None:
+            return (f"Voice saved — {final} was already known, and this "
+                    f"sample was added to their voiceprint.")
+        return (f"Voice saved — you now recognize {final} and will be told "
+                f"when they speak.")
+
+    def tool_remember(self, who, fact):
+        if not self.id_on:
+            return "FAILED: memory is offline right now."
+        who = " ".join(str(who).split())[:40]
+        if not who or not str(fact).strip():
+            return "FAILED: needs both a name and a fact."
+        if not self.people.remember(who, fact, create=True):
+            return (f"FAILED: '{who}' is not a person you can remember "
+                    f"things about.")
+        print(f"  [id] noted — {who}: {fact}", flush=True)
+        return f"Remembered about {who}."
+
+    async def run_tool(self, call_id, name, args_json, ws):
+        if name in ("enroll_speaker", "remember_person"):
+            try:
+                kw = json.loads(args_json or "{}")
+            except Exception:
+                kw = {}
+            if name == "enroll_speaker":
+                result = self.tool_enroll(kw.get("name", ""))
+            else:
+                result = self.tool_remember(kw.get("name", ""),
+                                            kw.get("fact", ""))
+        elif name == "stop_moving":
             result = await asyncio.to_thread(self.motion.stop_moving)
         else:
             move = name.removeprefix("play_")
@@ -494,7 +834,7 @@ class Live:
             return
         failed = result.startswith("FAILED")
         explain = failed and "stopped by user" not in result
-        if failed:
+        if failed and name not in ("enroll_speaker", "remember_person"):
             result += (" — your body did NOT complete the move. Tell the "
                        "human plainly and give the reason.")
         try:
@@ -504,8 +844,10 @@ class Live:
             if explain:                     # speak the failure; success = silent
                 if self.active_response:
                     self.explain_pending = True   # wait out the current reply
-                else:
+                elif not self.user_speaking:      # never talk over the human;
                     await self.send({"type": "response.create"})
+                # (mid-speech failures surface at their turn's response,
+                # which sees the FAILED tool output in the conversation)
         except websockets.ConnectionClosed:
             print(f"  [robot] '{name}' result lost — connection dropped",
                   flush=True)
@@ -546,11 +888,25 @@ class Live:
             self.transcript = []
             if text:
                 print(f"\nPOPPY: {text}", flush=True)
+                if self.id_ever_on:
+                    self.resolve_lines()   # his line comes AFTER theirs
+                    self.slog.add("poppy", text)
 
         elif t == "conversation.item.input_audio_transcription.completed":
             text = (evt.get("transcript") or "").strip()
             if text:
-                print(f"\nyou: {text}", flush=True)
+                serial = self.item_serial.pop(evt.get("item_id"),
+                                              self.turn_serial)
+                # only show a name if it belongs to THIS turn (the voice
+                # match may still be running — the log gets it either way)
+                tag = ""
+                if self.id_note_pending and self.id_note_pending[0] == serial:
+                    tag = f" [{self.id_note_pending[1]}]"
+                    self.id_note_pending = None
+                print(f"\nyou{tag}: {text}", flush=True)
+                if self.id_ever_on:
+                    self.pending_lines.append((serial, text))
+                    self.resolve_lines()
 
         elif t == "conversation.item.input_audio_transcription.failed":
             err = (evt.get("error") or {}).get("message", "?")
@@ -558,14 +914,55 @@ class Live:
                   flush=True)
 
         elif t == "input_audio_buffer.speech_started":
+            self.turn_serial += 1
+            self.user_speaking = True
+            if evt.get("item_id"):         # ties the coming transcript to
+                self.item_serial[evt["item_id"]] = self.turn_serial   # this turn
+            if self.id_on and not self.args.ptt:
+                # audio_start_ms is on the appended-audio timeline; map it
+                # into our mirror buffer (base = bytes no longer held)
+                ms = evt.get("audio_start_ms")
+                base = self.appended - len(self.vbuf)
+                self.utt_start = (
+                    min(max(0, ms * 48 - base), len(self.vbuf))
+                    if ms is not None
+                    else max(0, len(self.vbuf) - int(0.4 * RATE) * 2))
+                self.utt_overlap = self.speaking or bool(self.active_response)
+                if self.early_fut:
+                    self.early_fut.cancel()
+                    self.early_fut = None
             if self.speaking or self.active_response:
-                # barge-in: shut up instantly; the server cancels its own
-                # response (interrupt_response), we align his memory
-                await self.interrupt_playback(cancel=False)
+                # barge-in: shut up instantly; with create_response the
+                # server cancels its own response (interrupt_response) —
+                # when WE create responses, we must also cancel ourselves
+                await self.interrupt_playback(cancel=self.session_manual)
 
         elif t == "input_audio_buffer.speech_stopped":
             self.t_speech_stopped = time.time()
             self.first_audio_seen = False
+            self.user_speaking = False
+            if self.session_manual:
+                start = (self.utt_start if self.utt_start is not None
+                         else max(0, len(self.vbuf) - 8 * RATE * 2))
+                pcm = bytes(self.vbuf[start:])   # slice NOW, cleared on commit
+                # claim the early embedding SYNCHRONOUSLY — by the time the
+                # task runs, these fields may already belong to the next turn
+                fut, self.early_fut = self.early_fut, None
+                overlap, self.utt_overlap = self.utt_overlap, False
+                self.utt_start = None
+                task = asyncio.create_task(self.id_then_respond(
+                    pcm, fut, self.ws, self.turn_serial, overlap))
+                self.tool_tasks.add(task)
+                task.add_done_callback(self.tool_tasks.discard)
+
+        elif t in ("input_audio_buffer.committed",
+                   "input_audio_buffer.cleared"):
+            item_id = evt.get("item_id")
+            if item_id and item_id not in self.item_serial:
+                self.item_serial[item_id] = self.turn_serial   # PTT path
+            if not self.args.ptt:          # PTT manages its own capture
+                self.vbuf.clear()
+                self.utt_start = None
 
         elif t == "response.created":
             self.active_response = evt.get("response", {}).get("id")
@@ -582,7 +979,8 @@ class Live:
             call_id = evt.get("call_id")
             name = evt.get("name") or self.call_names.get(call_id, "")
             rid = evt.get("response_id") or self.active_response
-            self.pending_calls.setdefault(rid, []).append((call_id, name))
+            self.pending_calls.setdefault(rid, []).append(
+                (call_id, name, evt.get("arguments") or "{}"))
 
         elif t == "response.done":
             resp = evt.get("response", {})
@@ -591,9 +989,9 @@ class Live:
             PROF["turns"] += 1
             calls = self.pending_calls.pop(resp.get("id"), [])
             if status == "completed":
-                for call_id, name in calls:
+                for call_id, name, args_json in calls:
                     task = asyncio.create_task(
-                        self.run_tool(call_id, name, self.ws))
+                        self.run_tool(call_id, name, args_json, self.ws))
                     self.tool_tasks.add(task)
                     task.add_done_callback(self.tool_tasks.discard)
             elif calls:
@@ -602,9 +1000,12 @@ class Live:
             if status in ("failed", "incomplete"):
                 det = json.dumps(resp.get("status_details") or {})[:200]
                 print(f"  [ws] response {status}: {det}", flush=True)
-            if self.explain_pending:       # deferred failure explanation
-                self.explain_pending = False
-                await self.send({"type": "response.create"})
+            if self.explain_pending:       # deferred failure explanation —
+                self.explain_pending = False   # but never over the human
+                # (a cancelled response means they barged in; a turn end
+                # will produce a response that sees the failure anyway)
+                if status == "completed" and not self.user_speaking:
+                    await self.send({"type": "response.create"})
 
         elif t == "error":
             err = evt.get("error", {})
@@ -621,6 +1022,16 @@ class Live:
         self.t_speech_stopped = None
         self.first_audio_seen = False
         self.cur_item, self.cur_item_bytes = None, 0
+        self.vbuf.clear()                # new session: audio timeline restarts
+        self.appended = 0
+        self.utt_start = None
+        self.id_note_pending = None
+        self.ptt_held = False            # a press that died with the old
+        self.ptt_ms = 0                  # session must not commit into the new
+        self.user_speaking = False
+        if self.early_fut:
+            self.early_fut.cancel()
+            self.early_fut = None
 
     async def run(self):
         drops = 0
@@ -670,12 +1081,32 @@ class Live:
                                 print("SELFTEST OK", flush=True)
                                 return
                             if self.args.wiretest:
+                                # also validate the voice-id note shape live
+                                await self.send({
+                                    "type": "conversation.item.create",
+                                    "item": {"type": "message",
+                                             "role": "system", "content": [
+                                        {"type": "input_text", "text":
+                                         "[voice-id] (wiretest probe)"}]}})
                                 async def _end():
                                     await asyncio.sleep(18)
                                     print("WIRETEST DONE — event types seen:",
                                           sorted(self.seen_types), flush=True)
                                     await ws.close()
                                 asyncio.create_task(_end())
+                            if self.id_on:
+                                roster = self.people.roster_text()
+                                if roster:
+                                    await self.send({
+                                        "type": "conversation.item.create",
+                                        "item": {"type": "message",
+                                                 "role": "system", "content": [
+                                            {"type": "input_text", "text":
+                                             roster + "\nWhen one of them "
+                                             "speaks you will be told by a "
+                                             "[voice-id] note. Greet people "
+                                             "you know by name when it feels "
+                                             "natural."}]}})
                             if self.first_connect:
                                 self.first_connect = False
                                 # Poppy opens the conversation
@@ -711,6 +1142,21 @@ def check(args, api_key, source, moves):
     print(f"moves ({len(moves)})       :")
     for n, m in moves.items():
         print(f"    {n:20s} {m['seconds']:5.1f} s  {m['frames']} frames")
+    if ident is None:
+        print(f"voice-id        : OFF — identity module: {_ident_err}")
+    elif args.no_id:
+        print("voice-id        : OFF (--no-id)")
+    else:
+        people = ident.People()
+        cached = (ident.MODELS_DIR / "spkrec-ecapa-voxceleb").exists()
+        print(f"voice-id        : ON — voice model "
+              f"{'cached' if cached else 'will download (~90 MB)'}")
+        print(f"people ({len(people.people)})      :")
+        for d in people.people.values():
+            n_pr = len(d.get("voiceprints", [])) + \
+                len(d.get("adaptive_prints", []))
+            print(f"    {d['name']:20s} {n_pr:2d} prints  "
+                  f"{len(d.get('facts', []))} facts")
     try:
         din = sd.query_devices(args.input_device, "input")
         dout = sd.query_devices(args.output_device, "output")
@@ -746,6 +1192,8 @@ def main():
     ap.add_argument("--output-device", type=int, default=None)
     ap.add_argument("--no-robot", action="store_true",
                     help="voice only, do not start the motion server")
+    ap.add_argument("--no-id", action="store_true",
+                    help="disable voice identification and people memory")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--wiretest", action="store_true",
@@ -779,6 +1227,16 @@ def main():
         threading.Thread(target=motion.start, args=(args,), daemon=True).start()
 
     live = Live(args, api_key, moves, motion)
+    if live.id_on:
+        n = len(live.people.people)
+        print(f"  voice-id ON — {n} people known"
+              + ("" if n else "  (enroll: python perception\\identity.py "
+                              "enroll <name>)"), flush=True)
+    elif not args.selftest:
+        why = ("--no-id" if args.no_id else
+               f"identity module failed: {_ident_err}" if ident is None
+               else "?")
+        print(f"  voice-id OFF ({why})", flush=True)
     try:
         asyncio.run(live.run())
     except KeyboardInterrupt:
@@ -787,6 +1245,14 @@ def main():
         print(f"  [ws] session ended: {e}", flush=True)
     finally:
         prof_summary()
+        if live.id_ever_on:
+            live.resolve_lines(force=True)  # lines still awaiting a name
+        if live.id_ever_on and live.slog.n >= 4:
+            print("  [id] mining the conversation for things worth "
+                  "remembering...", flush=True)
+            added = ident.extract_facts(api_key, live.people, live.slog.path)
+            print(f"  [id] {added} new memories saved" if added
+                  else "  [id] nothing new worth remembering", flush=True)
         if motion.p is not None:
             print("laying Poppy to rest (motors released)...", flush=True)
         motion.close()

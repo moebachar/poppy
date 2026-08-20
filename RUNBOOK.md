@@ -132,6 +132,30 @@ python scripts\motion\04_pose.py --port COM7 release           # everything soft
 To re-record the stance that anchors all moves: sculpt the robot by hand, then
 `save stand`.
 
+## 5b. Teach Poppy who people are (voice identity)
+
+The live agent (`perception\live_agent.py`) recognizes people by voice and
+keeps per-person memories in `perception\people\` (gitignored — personal data).
+
+```
+.venv\Scripts\python.exe perception\identity.py enroll Mohamed   # read 4 lines aloud (~1 min)
+.venv\Scripts\python.exe perception\identity.py list             # who Poppy knows + facts
+.venv\Scripts\python.exe perception\identity.py test             # live "who am I?" check
+.venv\Scripts\python.exe perception\identity.py forget <name>    # delete someone entirely
+.venv\Scripts\python.exe perception\identity.py fact <name> "…"  # add a memory by hand
+```
+
+- Enrolling from the CLI is best (clean samples), but strangers can also just
+  tell Poppy their name mid-conversation — he saves their voice himself.
+- During chat he's told who spoke, greets people he knows, and quietly calls
+  remember_person for things worth keeping; on exit the whole conversation is
+  mined once more for memories (facts land in `identity.py list`).
+- Needs `pip install torch torchaudio speechbrain` (one-time, ~200 MB; the
+  ~90 MB voice model auto-downloads to `perception\models\` on first run).
+  Without them — or with `--no-id` — the agent runs voice-blind as before.
+- Recognition is per-utterance and wants ≥1–2 s of speech; very short "yes/no"
+  replies keep the previous speaker. Same mic for enroll + chat matters.
+
 ## 6. Shutdown
 
 1. `Ctrl+C` any running script (motors go soft), or run the `release` command above.

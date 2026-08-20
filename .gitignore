@@ -11,6 +11,11 @@ venv/
 # secrets
 .env
 
+# personal data: voiceprints, per-person memories, conversation logs
+perception/people/
+# downloaded ML models (~90 MB, re-fetched on first run)
+perception/models/
+
 # ad-hoc file backups (git history is the real backup)
 *.bak-*
 

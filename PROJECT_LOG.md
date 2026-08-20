@@ -184,3 +184,58 @@ Artifacts: `hardware/motor_status.md` (all verdicts) · scanner patched to ignor
 - Operator verdict on voice loop v1: works, but the serial STT→brain→TTS chain is too slow — archive as-is, keep running. Next: rebuild on the **OpenAI Realtime API** (speech-to-speech, one WebSocket, server VAD, native tool calls) targeting sub-second responses and human-style interaction. Motion server + line protocol unchanged. Ring-mod cleared as a bottleneck by measurement (1.35 ms / 5 s clip).
 - **Built same day: `perception/live_agent.py`** — hands-free speech-to-speech on **gpt-realtime-2.1** (GA websocket, raw `websockets`): semantic VAD + far_field noise reduction, native move tools (announce-then-move in one breath; success stays silent, failure explained aloud; calls from cancelled/barged-in responses are never executed), a voice `stop_moving` tool (12 V plug remains THE e-stop), barge-in with `conversation.item.truncate` so his memory matches what was heard, phase-exact ring-mod, auto-reconnect for the 60-min session cap, adaptive move timeouts, motion-link respawn, unsolicited server lines (TEMP_RELEASE…) printed live, `[prof]` response-latency metric.
 - Validated live: selftest (session schema accepted), wiretest (greeting spoke through speakers; mic echo triggered a genuine VAD turn + truncate round-trip) — **measured response latency 1.08 s** vs v1's ~2.6–3.2 s. Reviewed by a 54-agent adversarial workflow: 17 confirmed findings fixed (incl. a deaf-mic regression and a barge-in race that would have executed just-cancelled moves). v1 `voice_agent.py` kept as the typed/push-to-talk fallback. Echo bit immediately in the lab → added `--ptt` (hold SPACE = talk, release = send; `turn_detection: null`, manual commit + response.create; holding SPACE mid-speech barges in) — zero echo, the lab default until the mic lives in the head. `--gate` = VAD-with-muting alternative.
+
+---
+
+## 2026-08-20 — Session 8 — Poppy learns WHO is talking (voice identity + people memory)
+
+Operator ask: in a room full of people, can Poppy tell voices apart, address people by
+name, and keep memories about them and their interactions? The Realtime API has no native
+diarization (confirmed — `gpt-4o-transcribe-diarize` is REST-only), so this is a
+client-side identity sidecar wrapped around the live agent.
+
+- **`perception/identity.py` (new)**: ECAPA-TDNN voiceprints (speechbrain 1.1.0 + torch
+  CPU; ~90 MB model auto-downloaded to `perception/models/`, Windows-safe
+  COPY_SKIP_CACHE fetch — the default SYMLINK strategy needs admin). One JSON per person
+  in `perception/people/` (gitignored: personal data): enrolled prints (pinned) +
+  adaptive prints (learned from confident matches, redundancy eviction) + facts +
+  last-seen. Matching = raw cosine against an enrollment-weighted centroid (0.6/0.4), on
+  silence-trimmed audio; thresholds 0.40 confident (with 0.06 margin over the runner-up) /
+  0.32 tentative. NOTE: 0.32, not SpeechBrain's textbook 0.25 — a measured cross-voice TTS
+  pair scored 0.31 while genuine clips sit 0.42–0.75. Utterances under ~0.9 s of NET
+  speech carry the previous speaker instead of guessing. CLI: `enroll` (4 read-aloud
+  lines) / `list` / `test` / `forget` / `fact`.
+- **Live-agent integration**: mic audio is mirrored locally; each finished turn is
+  embedded and matched, and the model receives a `[voice-id] That was X speaking` system
+  note BEFORE it answers. Latency trick: the embedding (~0.8 s CPU) starts ~2 s INTO the
+  utterance (speaker of the head = speaker of the turn), so the note is usually free. In
+  VAD modes the client now creates the responses (`create_response:false` + manual
+  `response.create` after the note — the GA-documented manual flow); PTT commits manually
+  as before. Slicing uses the documented cumulative-audio-timeline `audio_start_ms`
+  (48 bytes/ms).
+- **New model tools**: `enroll_speaker(name)` — a stranger says their name once and Poppy
+  binds the voice that JUST spoke to it forever (also handles "I'm not X, I'm Y!"
+  corrections; a same-name-different-voice collision becomes "Sara 2" instead of silently
+  merging two humans). `remember_person(name, fact)` — silent memory saves mid-chat,
+  auto-creating voiceless entries for people only heard ABOUT (e.g. Hiba). Anti-poisoning:
+  adaptation gated at 0.50 + 0.10 margin, throttled per person, and skipped whenever
+  Poppy's own speaker was audible at any point during the utterance.
+- **Session memory loop**: a who-said-what transcript
+  (`perception/people/_sessions/*.jsonl`) whose speaker labels wait for the voice match
+  (transcription is async and usually arrives first — naive labelling attributed lines to
+  the previous speaker). On exit gpt-4.1-mini mines it once for lasting facts (including
+  what people said to EACH OTHER) and merges them into the person files. Roster + facts
+  are re-injected at every (re)connect, so he greets known people by name even after the
+  60-min reconnect wipes the model's context.
+- **Validated**: 35 store/matching checks, 27 session-flow checks driving the real event
+  handlers through a fake websocket, a real-speech test (OpenAI TTS voices vs live ECAPA +
+  the fact extractor), selftest in both VAD and PTT modes, and a live wiretest. Two
+  research/review workflows (3 + 54 agents) pinned the GA event shapes and thresholds and
+  found 12 confirmed defects, all fixed — the worst: a voice-model failure mid-session
+  used to leave the agent permanently MUTE (session said `create_response:false`, the
+  client stopped creating them), plus stale-turn responses talking over the user,
+  enrollment binding the wrong person's voice, and transcript misattribution poisoning
+  memories.
+- RUNBOOK §5b documents the people-teaching workflow. Deps: `pip install torch torchaudio
+  speechbrain` (installed in .venv). Without them, or with `--no-id`, the agent runs
+  voice-blind exactly as before.
