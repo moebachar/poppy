@@ -43,13 +43,18 @@ MIC_RATE = 24000              # what the live agent records at
 # convention seen online), scored against a per-person centroid. SpeechBrain's
 # VoxCeleb EER point is 0.25; matched-mic conditions push genuine scores up,
 # so we sit stricter. Calibrate on real voices if it misbehaves.
-T_CONFIDENT = 0.40            # >=: that's them (with margin) — no doubt
-T_TENTATIVE = 0.32            # >=: probably them; below: a stranger
-#   (0.32 not the textbook 0.25: measured a cross-VOICE TTS pair at 0.31,
-#    while genuine clips sit 0.42-0.75 — strangers must not be "probably you")
+# Measured on this rig: one person's own read-aloud clips score 0.63-0.75
+# against their centroid, but the SAME voice in live conversation (room
+# distance, cross-talk, 2-4 s of speech) fell under 0.32 and was called a
+# stranger. Genuine live speech lives roughly 0.30-0.60, so the gates sit
+# lower than the clean-speech numbers would suggest.
+T_CONFIDENT = 0.36            # >=: that's them (with margin) — no doubt
+T_TENTATIVE = 0.26            # >=: probably them; below: a stranger
 MARGIN_MIN = 0.06             # best-vs-runner-up gap needed for "confident"
-T_ADAPT = 0.50                # ~2x stricter gate before LEARNING from a match
-MARGIN_ADAPT = 0.10           # (poisoning defense: borderline hits never adapt)
+T_ADAPT = 0.45                # stricter gate before LEARNING from a match —
+MARGIN_ADAPT = 0.10           # was 0.50, which live speech never reached, so
+ADAPT_SECONDS = 2.5           # he never adapted to the room. Long, clean,
+                              # unambiguous turns only (poisoning defense).
 MIN_ID_SECONDS = 0.9          # shorter utterances: don't judge, carry over
 MAX_ENROLLED = 10             # permanent prints per person (never evicted)
 MAX_ADAPTIVE = 8              # side-list learned from confident matches
@@ -152,9 +157,10 @@ class Embedder:
 
 
 def speech_only(pcm_int16, rate=MIC_RATE):
-    """Keep only speech-y 20 ms frames (int16 in/out, same rate). Used to
-    gate identification on NET speech — VAD padding and trailing silence
-    must not count toward the minimum."""
+    """Keep only speech-y 20 ms frames (int16 in/out, same rate). Both the
+    minimum-length gate AND the audio actually embedded use this: VAD
+    padding, room tone and the gaps between words drag every voice toward
+    a common point and were costing real recognitions."""
     frame = rate // 50
     n = len(pcm_int16) // frame
     if n < 4:
@@ -425,11 +431,14 @@ def _record(seconds, rate=MIC_RATE):
     return x.reshape(-1)
 
 
-ENROLL_LINES = [
-    "Hello Poppy, it's really nice to meet you, I hope we become good friends.",
-    "I spend a lot of my time here at the lab, working on all kinds of projects.",
-    "One two three four five, six seven eight nine ten — can you hear me well?",
-    "The weather changes every day, but a good conversation makes any day better.",
+# Prompts, not scripts: reading aloud produces a flat "reading voice" that
+# scores poorly against the lively voice people actually converse in — the
+# enrolment channel has to match the channel he will hear you on.
+ENROLL_PROMPTS = [
+    "Tell Poppy what you did this morning — just talk, whatever comes.",
+    "Describe the room you are in right now, out loud.",
+    "Say what you are working on at the lab these days.",
+    "Tell him about something you would do with a completely free day.",
 ]
 
 
@@ -475,17 +484,24 @@ def cli():
     emb.load_sync()
 
     if args.cmd == "enroll":
-        n = len(ENROLL_LINES)
-        print(f"\nEnrolling {args.name} — read each line aloud, naturally.")
+        n = len(ENROLL_PROMPTS)
+        print(f"{chr(10)}Enrolling {args.name} — TALK, do not read. Speak the "
+              f"way you would to a person, at the distance you normally sit "
+              f"from the mic. Keep going until the recording stops.")
         embs = []
-        for i, line in enumerate(ENROLL_LINES, 1):
-            input(f"\n  {i}/{n}  \"{line}\"\n    press Enter, then read it: ")
-            pcm = _record(6.0)
+        for i, prompt in enumerate(ENROLL_PROMPTS, 1):
+            input(f"{chr(10)}  {i}/{n}  {prompt}{chr(10)}    press Enter, "
+                  f"then talk: ")
+            pcm = _record(8.0)
             level = float(np.abs(pcm.astype(np.float32)).mean())
             if level < 40:
-                print("    (that was almost silence — let's redo it)")
-                input("    press Enter, then read it again: ")
-                pcm = _record(6.0)
+                print("    (that was almost silence — let us redo it)")
+                input("    press Enter, then talk: ")
+                pcm = _record(8.0)
+            voiced = len(speech_only(pcm)) / MIC_RATE
+            if voiced < 2.0:
+                print(f"    (only {voiced:.1f}s of actual speech there — try "
+                      f"to keep talking through the whole recording)")
             embs.append(emb.embed(pcm))
         sims = [float(np.dot(embs[i], embs[j]))
                 for i in range(n) for j in range(i + 1, n)]

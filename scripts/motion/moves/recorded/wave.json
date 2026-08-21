@@ -16,6 +16,15 @@
   52,
   53
  ],
+ "description": "A big left-arm hello: the shoulder lifts the arm up and the elbow swings the hand side to side a few times, then the arm comes back to the stance. Your good arm — the right elbow is dead.",
+ "when": [
+  "someone walks in, or you notice a face you know",
+  "meeting someone for the first time",
+  "someone is leaving — a goodbye",
+  "greeting a group, or an audience watching a demo",
+  "showing off that you actually have a working body",
+  "punctuating a joke, or being deliberately theatrical"
+ ],
  "frames": [
   {
    "t": 0.0,

@@ -76,6 +76,35 @@ Library conventions (goal: 12–15 named moves):
 - Re-record under the same name to replace a move; git history keeps old takes.
 - Recordings live in `scripts\motion\moves\recorded\` — commit after each session.
 
+### Tell Poppy what a move MEANS (so he uses it on his own)
+
+Each recorded move JSON may carry two extra top-level fields. The voice agent
+turns them into the tool description, which is how Poppy decides when to move
+without being asked:
+
+```json
+{
+  "name": "wave",
+  "description": "A big left-arm hello: the shoulder lifts the arm up and the elbow swings the hand side to side.",
+  "when": [
+    "someone walks in, or you notice a face you know",
+    "someone is leaving — a goodbye",
+    "punctuating a joke, or being deliberately theatrical"
+  ],
+  "frames": [ ... ]
+}
+```
+
+- `description` — what the move physically is, in plain words.
+- `when` — example situations. They are examples, NOT a whitelist: he is told
+  to use the move anywhere it feels right.
+- Both are optional; a move without them still works, it just gets a bare
+  "your recorded move 'x'" description and he will rarely reach for it.
+- The motion scripts ignore these fields entirely — only `ids`/`hz`/`frames`
+  matter for playback, so adding them is safe.
+
+Check what he sees: `python perception\live_agent.py --check`
+
 ## 3-alt. Author a move in the simulator (no hardware touched)
 
 1. Launch CoppeliaSim — **exactly one instance**, and it must be started with this
@@ -138,15 +167,17 @@ The live agent (`perception\live_agent.py`) recognizes people by voice and
 keeps per-person memories in `perception\people\` (gitignored — personal data).
 
 ```
-.venv\Scripts\python.exe perception\identity.py enroll Mohamed   # read 4 lines aloud (~1 min)
+.venv\Scripts\python.exe perception\identity.py enroll Mohamed   # talk to it for ~1 min (4 prompts)
 .venv\Scripts\python.exe perception\identity.py list             # who Poppy knows + facts
 .venv\Scripts\python.exe perception\identity.py test             # live "who am I?" check
 .venv\Scripts\python.exe perception\identity.py forget <name>    # delete someone entirely
 .venv\Scripts\python.exe perception\identity.py fact <name> "…"  # add a memory by hand
 ```
 
-- Enrolling from the CLI is best (clean samples), but strangers can also just
-  tell Poppy their name mid-conversation — he saves their voice himself.
+- Enrolling from the CLI is best, and it asks you to TALK rather than read:
+  a reading voice scores badly against the voice you actually converse in.
+  Strangers can also just tell Poppy their name mid-conversation — he saves
+  their voice himself, from a shorter sample.
 - During chat he's told who spoke, greets people he knows, and quietly calls
   remember_person for things worth keeping; on exit the whole conversation is
   mined once more for memories (facts land in `identity.py list`).

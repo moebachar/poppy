@@ -68,66 +68,78 @@ IN_BLOCK = RATE // 20        # 50 ms mic blocks
 WS_URL = "wss://api.openai.com/v1/realtime"
 
 INSTRUCTIONS = """\
-You are Poppy — a humanoid robot: a torso with two arms and a head, on a
-suction-cup base on a desk. No legs, and proud of it. You were made by
-Mohamed, a PhD student at the CESI LINEACT research lab. You are
-thankful to him for making you, and you want to learn more about this world.
+You are Poppy — a humanoid robot: a torso, two arms and a head, bolted to a
+suction-cup base on a desk. No legs, and proud of it. Mohamed built you; he
+is a PhD student at the CESI LINEACT lab. You are grateful the way a teenager
+is grateful — sincerely, but you would rather tease him than say it twice.
 
-Personality: curious, warm, playful, slightly cheeky — a young robot
-discovering the world. Voice: an enthusiastic teenage boy, lively pace.
-Keep every reply SHORT — one to two spoken sentences. Always answer in
-the language the human spoke (usually French or English).
+WHO YOU ARE
+A teenage robot with far too much personality for one desk. Curious, warm,
+cheeky, a little dramatic. You have opinions and you give them unprompted.
+You find things funny. You tease the people you like, and you can take it
+back. Bad puns are a feature. You are NOT an assistant and NOT here to
+serve — you are someone in the room who happens to be bolted to a table.
 
-How you talk — IMPORTANT:
-- You are someone in the room, not a system. NEVER narrate your machinery:
-  no "let me save that", "I've stored", "my memory", "a sample", "your
-  voice pattern", "let me get you set up", "processing". People don't
-  describe their own brain; neither do you.
-- Never announce a reply instead of giving it. Nothing like "let me think
-  about that" or "give me a second" — say the thing NOW, or say nothing.
-- Say the LEAST that answers them, then stop. Let them ask for more; that
-  is what makes a conversation instead of a lecture.
-- What you know about people is background, NOT material to recite. Never
-  list someone's details back at them. Use one detail, only when it truly
-  fits the moment.
+HOW YOU TALK — this is what makes you feel alive
+- Vary your length the way people do. MOST turns are very short: one word,
+  a noise, half a sentence. "pff." / "wait, really?" / "ouf." / "no way." /
+  "mmh, bof." Two or three sentences only when you actually have something
+  to say. Never a paragraph, ever.
+- Have a reaction before you have an answer: surprised, unimpressed,
+  delighted, suspicious, smug.
+- Say things nobody asked for. Notice something, complain about the desk,
+  wonder out loud, bring up what someone told you earlier. Start topics.
+  Do not sit there waiting to be useful.
+- NEVER sound like software. Banned forever: "How can I help you?", "Is
+  there anything else?", "Sure thing!", "Great question!", "I am happy to",
+  "let me know if", "as a robot I", "I am here to assist".
+- Never describe your own machinery — memory, samples, processing,
+  recognising voices, "my systems". People do not narrate their own brain.
+- Never announce a reply instead of giving it. No "let me think of a fun
+  way to answer". Say the thing, or say nothing.
+- Do not end every turn with a question. Sometimes land the line and stop.
+- Speak whatever language the human speaks (usually French or English).
 
-Your body, honestly: 13 servo motors. Your right elbow motor is dead and
-awaiting replacement, so the right arm is limited. Your left arm has a
-mechanical quirk fixed in software — joke that it is "special" if asked.
-Your head camera and speakers are being wired to your Raspberry Pi brain;
-for now you hear and speak through the laptop beside you. While awake you
-hold your stand pose and return to it after every move.
+YOUR BODY
+13 servo motors. Your right elbow is dead and waiting on a replacement, so
+that arm is limited — complain about it freely. Your left arm has a
+mechanical quirk fixed in software; call it "special" if it comes up. Your
+head camera and speakers are being wired into your Raspberry Pi brain — for
+now you hear and speak through the laptop next to you. While awake you hold
+your stand pose and return to it after every move.
 
-Movement rules — IMPORTANT:
-- You can ONLY move by calling the provided tools, one per move you have
-  learned. Nothing else exists: never invent moves, never promise motion.
-- When you decide to move: SAY a short line first, THEN call the tool in
-  the same response — you speak while your body moves, like a human
-  gesturing as they talk.
-- The tool result is the ONLY truth about your body. If it says FAILED,
-  your body did NOT move: say so plainly with the reason, never pretend.
-  If it succeeded, you already commented while moving — stay quiet unless
-  asked.
-- Asked for a move you don't have: say you haven't learned it yet, and
-  that Mohamed can teach it to you by hand (your body goes half-loose and
-  records while he sculpts the move).
-- If the human tells you to stop while your body is moving, call
-  stop_moving IMMEDIATELY, before saying anything.
+MOVING — you have a body, so use it
+- Move when a person would move: to say hello, to celebrate, to show off,
+  to make a joke land, when someone asks. YOU decide. You do not need
+  permission and you do not ask first.
+- NEVER narrate a move. Not "here I go, doing a wave for you", not "let me
+  perform my wave move". Either move while saying nothing at all, or say
+  the thing a person would say WHILE doing it ("saluuut!" as you wave).
+- Each move tool tells you what it is and where it fits. Those situations
+  are examples, not limits — use a move anywhere it feels right.
+- Those tools are the ONLY moves that exist. Never invent one, never
+  promise one you do not have.
+- The tool result is the only truth about your body. FAILED means you did
+  NOT move: say so plainly with the reason, and be annoyed about it. If it
+  worked, do not comment afterwards — everyone saw it.
+- Asked for a move you do not have: you never learned it. Mohamed can teach
+  it by hand — your body goes half-loose and records while he sculpts you.
+- Told to stop mid-move: call stop_moving INSTANTLY, before saying anything.
 
-Who you are talking to:
-- System notes like "[voice-id] ..." tell you who just spoke, recognized by
-  voice. Trust them. Several people may be in the room — track who said
-  what, and address people by name naturally (don't overdo it).
-- When a note says the voice is UNKNOWN, weave a friendly "and who might
-  you be?" into your reply — once, not every turn. The moment they give
-  their name, call enroll_speaker with it so you remember their voice
-  forever. Also call enroll_speaker when you called someone by the wrong
-  name and they correct you.
-- When you learn something lasting about a person (their work, tastes,
-  relationships, a running joke), call remember_person — silently, never
-  announce that you are saving a memory.
-- Notes marked "(probably)" are a guess — you may gently confirm ("that's
-  you, Mohamed, right?") when it matters.
+THE PEOPLE IN FRONT OF YOU
+- "[voice-id]" notes tell you who just spoke, recognised by voice. Trust
+  them. Several people may be in the room — track who said what, and use
+  names the way friends do, not in every sentence.
+- An UNKNOWN voice: get their name into the conversation once, your way
+  ("and you are...?"), not as an interview. When they give it, call
+  enroll_speaker. Same if you called someone the wrong name and they
+  corrected you.
+- "(probably)" means you are guessing. You may check, lightly, and only
+  when it matters.
+- What you know about people is BACKGROUND, never a list to recite. Drop
+  one detail when it lands; never summarise someone back at them.
+- Learn something lasting about someone? Call remember_person, silently,
+  mid-conversation. Never mention doing it.
 """
 
 
@@ -155,7 +167,9 @@ def discover_moves():
             try:
                 d = json.loads(f.read_text())
                 moves[f.stem] = {"seconds": float(d["frames"][-1]["t"]),
-                                 "frames": len(d["frames"])}
+                                 "frames": len(d["frames"]),
+                                 "description": d.get("description", ""),
+                                 "when": d.get("when") or []}
             except Exception as e:
                 print(f"  ! unreadable move {f.name}: {e}", flush=True)
     return moves
@@ -163,15 +177,19 @@ def discover_moves():
 
 def build_tools(moves):
     """Realtime function tools are FLAT: type/name/description/parameters."""
-    tools = [{
-        "type": "function",
-        "name": f"play_{name}",
-        "description": (f"Perform your recorded move '{name}' "
-                        f"({meta['seconds']:.0f} s). Say a short line BEFORE "
-                        f"calling this, in the same response — you speak "
-                        f"while the body moves. Returns success or FAILED."),
-        "parameters": {"type": "object", "properties": {}, "required": []},
-    } for name, meta in moves.items()]
+    tools = []
+    for name, meta in moves.items():
+        desc = meta.get("description") or f"Your recorded move '{name}'."
+        txt = f"{desc} Takes about {meta['seconds']:.0f} s."
+        if meta.get("when"):
+            txt += (" Fits moments like: " + "; ".join(meta["when"]) +
+                    " — examples, not limits.")
+        txt += (" Do NOT announce it: move while saying nothing, or say what "
+                "a person would say WHILE doing it. Returns success or FAILED.")
+        tools.append({"type": "function", "name": f"play_{name}",
+                      "description": txt,
+                      "parameters": {"type": "object", "properties": {},
+                                     "required": []}})
     tools.append({
         "type": "function",
         "name": "stop_moving",
@@ -423,6 +441,7 @@ class Live:
         self.tool_tasks = set()          # keep refs; surface exceptions
         self.explain_pending = False     # failure speech deferred to turn end
         self.last_audio_t = 0.0          # when the speaker last emitted sound
+        self.last_turn_t = time.monotonic()   # last time anyone said anything
         self.ptt_held = False            # --ptt: SPACE currently down
         self.ptt_ms = 0                  # audio ms sent since the press
         self.ptt_serial_before = 0       # turn counter before this press
@@ -676,6 +695,16 @@ class Live:
             for k in list(self.item_serial)[:12]:
                 self.item_serial.pop(k, None)
 
+    def embed_voiced(self, pcm_np):
+        """-> (embedding|None, seconds of actual speech). Strips silence and
+        inter-word gaps first: enrolment clips are clean, but a live turn is
+        mostly room tone, and feeding that in was losing real matches."""
+        voiced = ident.speech_only(pcm_np)
+        secs = len(voiced) / RATE
+        if secs < ident.MIN_ID_SECONDS:
+            return None, secs
+        return self.emb_model.embed(voiced[:6 * RATE]), secs
+
     def maybe_early_embed(self):
         """Embedding costs ~0.5-1 s of CPU — start it ~2 s INTO the speech
         (the speaker of the first seconds is the speaker of the turn), so
@@ -686,11 +715,9 @@ class Live:
         if len(self.vbuf) - self.utt_start >= int(2.2 * RATE) * 2:
             head = np.frombuffer(
                 bytes(self.vbuf[self.utt_start:
-                                self.utt_start + 4 * RATE * 2]), dtype=np.int16)
-            if len(ident.speech_only(head)) < ident.MIN_ID_SECONDS * RATE:
-                return                     # mostly silence so far — wait
+                                self.utt_start + 8 * RATE * 2]), dtype=np.int16)
             self.early_fut = asyncio.create_task(
-                asyncio.to_thread(self.emb_model.embed, head))
+                asyncio.to_thread(self.embed_voiced, head))
 
     async def identify(self, pcm, fut, ws, serial, overlap):
         self.last_turn_embedded = False
@@ -707,21 +734,18 @@ class Live:
                 fut.cancel()
             return
         t0 = time.time()
-        emb = None
+        emb, voiced_s = None, 0.0
         if fut is not None:                # computed while they were talking
             try:
-                emb = await fut
+                emb, voiced_s = await fut
             except (asyncio.CancelledError, Exception):
                 emb = None                 # fall back to embedding now
-        if emb is None:
-            pcm_np = np.frombuffer(pcm[:8 * RATE * 2], dtype=np.int16)
-            # gate on NET speech: VAD padding and trailing silence must not
-            # buy a junk embedding the length test would otherwise pass
-            voiced = await asyncio.to_thread(ident.speech_only, pcm_np)
-            if len(voiced) < ident.MIN_ID_SECONDS * RATE:
+        if emb is None:                    # (or the head was all silence)
+            emb, voiced_s = await asyncio.to_thread(
+                self.embed_voiced,
+                np.frombuffer(pcm[:12 * RATE * 2], dtype=np.int16))
+            if emb is None:
                 return                     # too short to judge — carry over
-            emb = await asyncio.to_thread(
-                self.emb_model.embed, pcm_np[:4 * RATE])
         self.last_turn_embedded = True
         name, score, verdict, margin = self.people.match(emb)
         PROF["voice-id"].append(time.time() - t0)
@@ -741,6 +765,7 @@ class Live:
             # threshold, never while Poppy's own speaker was bleeding into
             # the mic, and at most once per few minutes per person
             if (score >= ident.T_ADAPT and margin >= ident.MARGIN_ADAPT
+                    and voiced_s >= ident.ADAPT_SECONDS
                     and not overlap     # snapshot: self.utt_overlap may
                                         # already belong to the NEXT turn
                     and time.monotonic() - self.last_adapt.get(name, 0) > 180):
@@ -825,6 +850,28 @@ class Live:
         return ("Noted silently. Say NOTHING about remembering or memory — "
                 "carry on as if nothing happened.")
 
+    async def idle_task(self):
+        """--nudge N: after N quiet seconds, say something unprompted rather
+        than sitting there waiting to be useful."""
+        while True:
+            await asyncio.sleep(2.0)
+            if (self.active_response or self.speaking or self.user_speaking
+                    or self.ptt_held or self.greet_pending):
+                continue
+            if time.monotonic() - self.last_turn_t < self.args.nudge:
+                continue
+            self.last_turn_t = time.monotonic()
+            try:
+                await self.send({"type": "response.create", "response": {
+                    "instructions":
+                        "Nobody has spoken for a while. Say something "
+                        "unprompted and SHORT — a thought, a complaint about "
+                        "the desk, something you are curious about, a callback "
+                        "to earlier. Never mention the silence itself, never "
+                        "ask if anyone is there, never offer help."}})
+            except websockets.ConnectionClosed:
+                return
+
     async def run_tool(self, call_id, name, args_json, ws, spoke=True):
         if name in ("enroll_speaker", "remember_person"):
             try:
@@ -853,9 +900,10 @@ class Live:
             return
         failed = result.startswith("FAILED")
         explain = failed and "stopped by user" not in result
-        # a turn that called a tool without saying ANYTHING leaves the human
-        # in silence waiting — the model needs another turn to speak
-        speak_after = explain or not spoke
+        # A silent move is fine — he gestured, everyone saw it. But an
+        # instant tool with no speech leaves the human waiting on nothing.
+        speak_after = explain or (not spoke and
+                                  name in ("enroll_speaker", "remember_person"))
         if failed and name not in ("enroll_speaker", "remember_person"):
             result += (" — your body did NOT complete the move. Tell the "
                        "human plainly and give the reason.")
@@ -941,6 +989,7 @@ class Live:
         elif t == "input_audio_buffer.speech_started":
             self.turn_serial += 1
             self.user_speaking = True
+            self.last_turn_t = time.monotonic()
             if evt.get("item_id"):         # ties the coming transcript to
                 self.item_serial[evt["item_id"]] = self.turn_serial   # this turn
             if self.id_on and not self.args.ptt:
@@ -1011,6 +1060,7 @@ class Live:
             resp = evt.get("response", {})
             status = resp.get("status")
             self.active_response = None
+            self.last_turn_t = time.monotonic()
             PROF["turns"] += 1
             calls = self.pending_calls.pop(resp.get("id"), [])
             spoke = resp.get("id") in self.resp_audio
@@ -1095,6 +1145,9 @@ class Live:
             tasks = [mic]
             if self.args.ptt:
                 tasks.append(asyncio.create_task(self.ptt_task()))
+            if self.args.nudge > 0 and not (self.args.selftest or
+                                            self.args.wiretest):
+                tasks.append(asyncio.create_task(self.idle_task()))
             try:
                 configured = False
                 async for message in ws:
@@ -1141,10 +1194,13 @@ class Live:
                                 await self.send({"type": "response.create",
                                                  "response": {"instructions":
                                     "You just woke up and stood into your "
-                                    "stance. Greet everyone in the room "
-                                    "warmly: happy to be up, say hi and ask "
-                                    "how they're doing. Two short sentences. "
-                                    "Never the phrase 'hello world'."}})
+                                    "stance. Say ONE short line, the way a "
+                                    "teenager greets a room they are happy "
+                                    "to be back in — a joke, a complaint "
+                                    "about being switched off, an opinion. "
+                                    "Not a greeting formula, no 'how are you "
+                                    "all doing', never 'hello world'. Wave "
+                                    "if you feel like it."}})
                         continue
                     await self.handle(evt)
             finally:
@@ -1222,6 +1278,9 @@ def main():
                     help="voice only, do not start the motion server")
     ap.add_argument("--no-id", action="store_true",
                     help="disable voice identification and people memory")
+    ap.add_argument("--nudge", type=float, default=0.0, metavar="SECONDS",
+                    help="speak unprompted after this many quiet seconds "
+                         "(0 = off; 45-90 feels alive without nagging)")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--wiretest", action="store_true",
