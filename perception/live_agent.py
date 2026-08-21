@@ -4,6 +4,7 @@ r"""Poppy Live — hands-free speech-to-speech agent on the OpenAI Realtime API.
     python perception\live_agent.py             # talk; Ctrl+C to quit
     python perception\live_agent.py --check     # config diagnostic, no audio
     python perception\live_agent.py --selftest  # connect + configure, no audio
+    python perception\live_agent.py --deck      # launched BY web/server.py
 
 One websocket, one model: the mic streams up continuously, server-side VAD
 decides when you finished a sentence, and the model answers IN VOICE (~0.5 s)
@@ -12,6 +13,12 @@ while natively calling one tool per recorded move. No STT/brain/TTS hops.
 Motion is unchanged: scripts/motion/10_motion_server.py runs where the USB2AX
 is (local COM port, else the Pi over ssh) and holds the stance between moves.
 The model keeps talking while the body moves.
+
+--deck is the browser console (web/VOICE.md): the deck already owns the motion
+server and the serial bus, so this process spawns nothing and asks for moves
+over its own stdout ("@move 7 wave"). stdin carries the deck's commands and
+stdout gains the "@" telemetry the hologram's aura runs on. Everything else —
+the model, the voice, the identity work — is identical.
 
 Barge-in: if you speak while Poppy speaks, playback stops and he listens.
 With laptop mic + speakers he may hear himself — two remedies:
@@ -26,6 +33,10 @@ mined again from the transcript when the session ends. Enroll voices with
     python perception\identity.py enroll <name>
 Needs torch+speechbrain (pip install torch torchaudio speechbrain);
 without them the agent still runs, just voice-blind. --no-id disables.
+The voiceprint model is loaded BEFORE the session opens (~5 s, once). It used
+to load on a worker thread while the conversation ran, where it lost the GIL
+to the event loop and took 25-50 s — and every turn until then was matched
+against nothing, so he asked people he knows perfectly well who they were.
 
 Needs OPENAI_API_KEY in .env at the repo root (wins over machine env vars).
 """
@@ -65,6 +76,9 @@ MOTION_SERVER = ROOT / "scripts" / "motion" / "10_motion_server.py"
 
 RATE = 24000                 # realtime API native PCM rate, both directions
 IN_BLOCK = RATE // 20        # 50 ms mic blocks
+ID_LOAD_WAIT = 120.0         # longest we hold the session for the voice model
+                             # (a first run downloads ~80 MB; after that ~5 s)
+SPEAKER_MEMORY = 12          # turns a voice match is kept for its late transcript
 WS_URL = "wss://api.openai.com/v1/realtime"
 
 INSTRUCTIONS = """\
@@ -141,6 +155,14 @@ MOVING — you have a body, so use it
   giving you a little hello back". Either move while saying NOTHING at all,
   or say the words themselves ("saluuut!" as you wave) — the words a person
   says, never a description of what their arm is doing.
+- ASKED TO GREET SOMEONE — the trap you keep falling into. "Say hi to my
+  girlfriend" means SAY THE GREETING, out loud, TO HER. Say "Salut !" or
+  "Hey — hi." and wave. It does NOT mean announcing the errand back to the
+  person who asked. Banned, and this is the exact failure: "Okay, here I am,
+  saying hi to your girlfriend", "sure, saying hello to her now", "consider
+  her greeted". A human handed a phone says "hi!" — they do not say "I am
+  now greeting the person on the phone." The same holds for every errand
+  with a body: do the thing, do not report the thing.
 - Each move tool tells you what it is and where it fits. Those situations
   are examples, not limits — use a move anywhere it feels right.
 - Those tools are the ONLY moves that exist. Never invent one, never
@@ -191,7 +213,10 @@ def discover_moves():
     if MOVES_DIR.exists():
         for f in sorted(MOVES_DIR.glob("*.json")):
             try:
-                d = json.loads(f.read_text())
+                # explicit utf-8: the Windows default (cp1252) turns the
+                # em-dashes and accents in description/when into mojibake,
+                # and those strings go straight into the model's tool list
+                d = json.loads(f.read_text(encoding="utf-8"))
                 moves[f.stem] = {"seconds": float(d["frames"][-1]["t"]),
                                  "frames": len(d["frames"]),
                                  "description": d.get("description", ""),
@@ -211,7 +236,9 @@ def build_tools(moves):
             txt += (" Fits moments like: " + "; ".join(meta["when"]) +
                     " — examples, not limits.")
         txt += (" Do NOT announce it: move while saying nothing, or say what "
-                "a person would say WHILE doing it. Returns success or FAILED.")
+                "a person would say WHILE doing it — the words themselves "
+                "(\"salut !\"), never a report of the errand (\"here I am "
+                "saying hi to her\"). Returns success or FAILED.")
         tools.append({"type": "function", "name": f"play_{name}",
                       "description": txt,
                       "parameters": {"type": "object", "properties": {},
@@ -262,6 +289,172 @@ def robotize(pcm, depth, offset=0):
     t = (np.arange(x.shape[0], dtype=np.float32) + offset) / RATE
     x *= (1.0 - depth) + depth * np.sin(2 * np.pi * 30.0 * t)
     return np.clip(x, -32768, 32767).astype(np.int16)
+
+
+# ------------------------------------------------------- the deck (--deck) --
+# Protocol: web/VOICE.md section 1. Every line we print that starts with "@"
+# belongs to the bridge; everything else is a log line it forwards verbatim.
+DECK = False
+PRINT_LOCK = threading.Lock()    # one lock for stdout — lines never interleave
+PHASE_LOCK = threading.Lock()
+_PHASE = [None]                  # last phase published, so @phase is on-change
+
+NUDGE = ("Nobody has spoken for a while. Say something "
+         "unprompted and SHORT — a thought, a complaint about "
+         "the desk, something you are curious about, a callback "
+         "to earlier. Never mention the silence itself, never "
+         "ask if anyone is there, never offer help.")
+
+BAND_EDGES = [80, 180, 360, 700, 1300, 2400, 4200, 7000, 11000]   # Hz
+FFT_N = 1024                     # ~43 ms at 24 kHz
+LVL_HZ = 30.0
+LVL_FULL = 0.18                  # full-scale RMS that reads as 1.0
+LVL_WINDOW = int(RATE * 0.032)   # envelope window: the last ~32 ms
+RING_N = 2048                    # played/heard samples kept for the meter
+
+
+class LineLocked:
+    """stdout that emits whole lines, one thread at a time.
+
+    print() writes its text and its newline as two separate calls, so two
+    threads can cut each other's output in half — untidy in a log, fatal for
+    the "@" protocol, where half a line is a parse error at the bridge."""
+
+    def __init__(self, raw):
+        self.raw = raw
+        self.local = threading.local()     # the partial line, per writer
+
+    def write(self, s):
+        pend = getattr(self.local, "buf", "") + s
+        if "\n" not in pend:
+            self.local.buf = pend
+            return len(s)
+        whole, keep = pend.rsplit("\n", 1)
+        self.local.buf = keep
+        with PRINT_LOCK:
+            self.raw.write(whole + "\n")
+            self.raw.flush()
+        return len(s)
+
+    def flush(self):
+        with PRINT_LOCK:
+            self.raw.flush()
+
+    def __getattr__(self, name):
+        return getattr(self.raw, name)
+
+
+def deck_emit(verb, payload=None):
+    """One "@" line to the bridge. A no-op off the deck."""
+    if not DECK:
+        return
+    line = "@" + verb
+    if isinstance(payload, str):
+        line += " " + payload
+    elif payload is not None:
+        line += " " + json.dumps(payload, ensure_ascii=False,
+                                 separators=(",", ":"))
+    print(line, flush=True)
+
+
+def deck_phase(p):
+    """@phase, on change only. The emit happens INSIDE the lock so two
+    threads changing phase at once can never publish out of order."""
+    if not DECK:
+        return
+    with PHASE_LOCK:
+        if _PHASE[0] == p:
+            return
+        _PHASE[0] = p
+        deck_emit("phase", {"p": p})
+
+
+def short_sentence(msg, limit=140):
+    """First sentence of a model-facing string — @err is one line for a
+    human, not the paragraph the model gets told."""
+    msg = " ".join(str(msg).split())
+    cut = msg.find(". ")
+    if 0 < cut < limit:
+        msg = msg[:cut + 1]
+    return msg[:limit]
+
+
+def band_bins(n=FFT_N, rate=RATE):
+    """rfft bin index of each band edge (9 edges -> 8 bands)."""
+    return [min(n // 2, max(1, int(round(hz * n / rate)))) for hz in BAND_EDGES]
+
+
+def envelope(pcm):
+    """int16 samples -> 0..1: RMS against full scale, then LVL_FULL so
+    ordinary speech peaks near 0.8."""
+    if pcm.size == 0:
+        return 0.0
+    rms = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)))
+    return min(1.0, rms / 32768.0 / LVL_FULL)
+
+
+def band_levels(pcm, edges, window):
+    """8 log-spaced band levels 0..1 from the newest FFT_N samples.
+
+    Each band is its RMS, not the arithmetic mean of its bins: log spacing
+    makes the bottom band 5 bins wide and the top one 170, and a mean divides
+    a voice's energy by that width — the same tone measured 1.00 at 120 Hz
+    and 0.10 at 5 kHz, and real speech left b[5..7] flat at 0.02, which is an
+    aura with no fuzz in it. The RMS is width-fair, so a band lands on
+    exactly the scale envelope() uses and `b` reads like `o`."""
+    if pcm.size < FFT_N:
+        return [0.0] * (len(edges) - 1)
+    x = pcm[-FFT_N:].astype(np.float32) * window
+    # 2/sum(w) puts a full-scale sine at 32768 in its own bin; pwr is
+    # Parseval for a windowed rfft, turning sum|X|^2 into a mean square
+    wsum = float(window.sum())
+    mag = np.abs(np.fft.rfft(x)).astype(np.float64) * (2.0 / wsum)
+    pwr = wsum ** 2 / (2.0 * FFT_N * float((window ** 2).sum()))
+    power = mag ** 2
+    vals = []
+    for i in range(len(edges) - 1):
+        seg = power[edges[i]:edges[i + 1]]
+        rms = float(np.sqrt(seg.sum() * pwr)) if seg.size else 0.0
+        vals.append(min(1.0, rms / 32768.0 / LVL_FULL))
+    return vals
+
+
+class Ring:
+    """The most recent N int16 samples. Written from the audio callbacks,
+    read by the level thread — the callback runs on the audio thread, so it
+    holds the lock for one copy and does nothing else in it."""
+
+    def __init__(self, n):
+        self.n = n
+        self.buf = np.zeros(n, dtype=np.int16)
+        self.w = 0
+        self.lock = threading.Lock()
+
+    def push(self, pcm):
+        if pcm.size >= self.n:
+            pcm = pcm[-self.n:]
+        k = pcm.size
+        if not k:
+            return
+        with self.lock:
+            i, end = self.w, self.w + k
+            if end <= self.n:
+                self.buf[i:end] = pcm
+            else:
+                cut = self.n - i
+                self.buf[i:] = pcm[:cut]
+                self.buf[:end - self.n] = pcm[cut:]
+            self.w = end % self.n
+
+    def read(self):
+        with self.lock:
+            i = self.w
+            return np.concatenate((self.buf[i:], self.buf[:i]))
+
+    def clear(self):
+        with self.lock:
+            self.buf[:] = 0
+            self.w = 0
 
 
 # --------------------------------------------------- motion (unchanged) ----
@@ -428,6 +621,107 @@ class Motion:
             pass
 
 
+class DeckMotion:
+    """Motion over the deck pipe. Same blocking API as Motion, no subprocess
+    and no serial: the bridge already owns the motion server, so a move is an
+    RPC — "@move <token> <name>" out, "@move_result <token> ok|fail <reason>"
+    back on stdin, answered by the reader thread.
+
+    The token is what makes the RPC safe: it counts up from 1 for the life of
+    this process, the bridge echoes back the one it was given, and an answer
+    carrying any other token is dropped. Without it, the deck's late reply to
+    a move we already gave up on would be handed to the move running NOW.
+
+    The bridge always answers, "fail robot is off" included, so the 90 s
+    timeout only ever fires if the deck itself has gone away. It has to be
+    that long: the motion server's command loop is blocked for the whole
+    move plus the travel back to the stance."""
+
+    # The ceiling, not a budget. The bridge's own worst case for one @move is
+    # HOLD_TIMEOUT (25 s) + PLAY_TIMEOUT (60 s) + its poll overshoot ~= 85.5 s,
+    # and those two constants live in web/voicelink.py — move either of them
+    # without moving this and play() starts giving up on moves that were about
+    # to succeed. See web/VOICE.md 1.4.
+    TIMEOUT = 90.0
+
+    def __init__(self):
+        self.p = None                    # no child — main() tests this
+        self.q = queue.Queue()           # (token, verdict, reason) from stdin
+        self.ready = True                # the pipe is the only link there is;
+        self.lock = threading.Lock()     # the bridge judges the body itself
+        self.seq = 0                     # last token handed out
+        self.pending = None              # token the bridge still owes us
+
+    def start(self, args=None):
+        return True
+
+    def alive(self):
+        return self.ready
+
+    def result(self, token, verdict, reason):
+        """Called by the stdin thread on every @move_result. `pending` is the
+        first gate: an answer nobody is waiting for never even reaches the
+        queue (play() checks the token again, because it may have given up
+        between this read and the put)."""
+        try:
+            tok = int(token)
+        except (TypeError, ValueError):
+            return                       # not a token — not our protocol
+        if tok != self.pending:
+            return                       # a late answer to a dead request
+        self.q.put((tok, verdict, reason))
+
+    def stop_moving(self):
+        deck_emit("stopmove")
+        return "Stop signal sent — the body eases back to the stance."
+
+    def play(self, name, seconds=10.0):
+        """Blocking: ask, then wait for THIS request's answer."""
+        with self.lock:
+            if not self.ready:           # the link is gone: never wait 90 s
+                return "FAILED: the deck closed the link."
+            while True:                  # drop answers to abandoned requests
+                try:
+                    self.q.get_nowait()
+                except queue.Empty:
+                    break
+            self.seq += 1
+            tok = self.seq
+            self.pending = tok
+            deck_emit("move", f"{tok} {name}")
+            t_end = time.time() + self.TIMEOUT
+            try:
+                while time.time() < t_end:
+                    try:
+                        item = self.q.get(timeout=1)
+                    except queue.Empty:
+                        continue
+                    if item is None:
+                        return "FAILED: the deck closed the link mid-move."
+                    got, verdict, reason = item
+                    if got != tok:       # a straggler that raced `pending`
+                        continue
+                    if verdict == "ok":
+                        return (f"Move '{name}' performed; body is back at "
+                                f"the stance.")
+                    return "FAILED: " + (reason or "the deck refused the move")
+                return (f"FAILED: no answer from the deck after "
+                        f"{self.TIMEOUT:.0f} s.")
+            finally:
+                self.pending = None
+
+    def look(self):
+        deck_emit("look")
+
+    def close(self):
+        """Shutdown: release the move waiting on the deck AND refuse the next
+        one. A play() blocked here is a worker thread, and asyncio.run() joins
+        its thread pool on the way out — so an unanswered RPC would hold the
+        whole process for the full timeout and eat the end-of-session work."""
+        self.ready = False
+        self.q.put(None)                 # release a play() still waiting
+
+
 # ------------------------------------------------------------ profiling ----
 PROF = {"response": [], "move": [], "voice-id": [], "turns": 0}
 
@@ -476,6 +770,20 @@ class Live:
         self.ptt_ms = 0                  # audio ms sent since the press
         self.ptt_serial_before = 0       # turn counter before this press
 
+        # --- the deck (--deck): the "@" protocol over stdin/stdout ---
+        self.duplex = "ptt" if args.ptt else "gate" if args.gate else "full"
+        self.loop = None                 # asyncio loop, captured at connect
+        self.quitting = False            # @quit: stop reconnecting, go home
+        self.deck_mode = "connecting"    # connecting|hearing|thinking|idle
+        self.ptt_request = False         # @ptt down|up, in place of SPACE
+        self.deck_id = {}                # turn serial -> the voice match
+        self.id_quiet_last = None        # last "no voiceprint" reason told
+        self.ring_out = Ring(RING_N)     # PCM actually handed to the speaker
+        self.ring_in = Ring(RING_N)      # mic blocks going upstream
+        self.lvl_live = False            # streams up: @lvl has something to say
+        self.lvl_stop = threading.Event()
+        self.lvl_thread = None
+
         # --- who is talking (perception/identity.py) ---
         self.id_on = (ident is not None and not args.no_id
                       and not args.selftest)
@@ -520,7 +828,10 @@ class Live:
                                            # never learn from that voiceprint
         if len(take) < need:
             take = bytes(take) + b"\x00" * (need - len(take))
-        outdata[:] = np.frombuffer(take, dtype=np.int16).reshape(-1, 1)
+        pcm = np.frombuffer(take, dtype=np.int16)
+        if DECK:                           # levels come from what the room
+            self.ring_out.push(pcm)        # hears, padding silence included
+        outdata[:] = pcm.reshape(-1, 1)
 
     def flush_output(self):
         with self.out_lock:
@@ -588,6 +899,9 @@ class Live:
         try:
             while True:
                 data = await q_in.get()
+                if DECK:                   # the aura reacts to the person in
+                    self.ring_in.push(     # the room even while the mic is
+                        np.frombuffer(data, dtype=np.int16))   # gated shut
                 if self.args.ptt:
                     if not self.ptt_held:
                         continue           # mic gated shut between presses
@@ -626,9 +940,23 @@ class Live:
 
     async def ptt_task(self):
         """--ptt: SPACE down = talk (and barge in), SPACE up = send."""
-        print("  hold SPACE to talk — release to send", flush=True)
+        if DECK:                           # the browser holds the key, so the
+            print("  push-to-talk — the deck holds the key", flush=True)
+            # In this mode the mic is gated SHUT between presses: someone who
+            # switched to PTT and forgot gets a robot that hears nothing at all
+            # and asks who they are. Say it where they are looking.
+            deck_emit("err", {"m": "push-to-talk is on — Poppy hears nothing "
+                                   "unless you hold HOLD TO TALK"})
+        else:                              # 'keyboard' package needs a console
+            print("  hold SPACE to talk — release to send", flush=True)
+        never_pressed = time.monotonic()
         while True:
-            pressed = keyboard.is_pressed("space")
+            if never_pressed and time.monotonic() - never_pressed > 25:
+                never_pressed = 0
+                if not self.ptt_ms:
+                    deck_emit("err", {"m": "still push-to-talk: nothing has "
+                                           "been spoken to him yet"})
+            pressed = self.ptt_request if DECK else keyboard.is_pressed("space")
             if pressed and not self.ptt_held:
                 self.vbuf.clear()          # fresh utterance capture
                 self.utt_start, self.early_fut = 0, None
@@ -641,6 +969,7 @@ class Live:
                 # no VAD in manual mode: cancel his speech ourselves
                 if self.speaking or self.active_response:
                     await self.interrupt_playback(cancel=True)
+                self.deck_set_mode("hearing")
                 print("  REC * (release SPACE to send)", flush=True)
             elif not pressed and self.ptt_held:
                 self.ptt_held = False
@@ -652,6 +981,7 @@ class Live:
                     # no turn happened: give the serial back, so a real turn
                     # still being identified isn't left unanswered
                     self.turn_serial = self.ptt_serial_before
+                    self.deck_set_mode("idle")   # a tap: nothing is coming
                     if self.early_fut:
                         self.early_fut.cancel()
                         self.early_fut = None
@@ -663,6 +993,7 @@ class Live:
                     self.utt_start = None
                     self.t_speech_stopped = time.time()
                     self.first_audio_seen = False
+                    self.deck_set_mode("thinking")   # committed: his turn now
                     await self.send({"type": "input_audio_buffer.commit"})
                     # DON'T await: a blocked poll loop would drop the first
                     # second of an immediate re-press (mic gated on ptt_held)
@@ -671,6 +1002,146 @@ class Live:
                     self.tool_tasks.add(task)
                     task.add_done_callback(self.tool_tasks.discard)
             await asyncio.sleep(0.03)
+
+    # --- the deck ---
+    def from_deck(self, coro):
+        """Hand stdin work to the asyncio loop, which owns the websocket."""
+        loop = self.loop
+        if loop is None or loop.is_closed():
+            coro.close()                   # never awaited: say so ourselves
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(coro, loop)
+        except RuntimeError:
+            coro.close()
+
+    def deck_set_mode(self, mode):
+        self.deck_mode = mode
+        self.deck_phase_tick()
+
+    def deck_phase_tick(self):
+        """The phase machine of VOICE.md 1.1. Called on every change AND 30
+        times a second, so 'speaking' decays back to 'listening' a quarter
+        second after the last sample instead of waiting for an event."""
+        if not DECK:
+            return
+        mode = self.deck_mode
+        if mode in ("connecting", "hearing", "thinking"):
+            deck_phase(mode)
+            return
+        audible = self.speaking or time.monotonic() - self.last_audio_t < 0.25
+        deck_phase("speaking" if audible else "listening")
+
+    async def deck_interrupt(self):
+        """@interrupt — exactly what a barge-in does."""
+        if self.ws is None:
+            return
+        try:
+            await self.interrupt_playback(cancel=True)
+        except websockets.ConnectionClosed:
+            pass
+        if self.deck_mode == "thinking":
+            self.deck_set_mode("idle")
+
+    async def deck_nudge(self):
+        """@nudge — the idle_task line, on demand."""
+        if self.ws is None:
+            deck_emit("err", {"m": "there is no session to nudge"})
+            return
+        if self.active_response:
+            deck_emit("err", {"m": "he is already talking"})
+            return
+        self.last_turn_t = time.monotonic()
+        try:
+            await self.send({"type": "response.create",
+                             "response": {"instructions": NUDGE}})
+        except websockets.ConnectionClosed:
+            pass
+
+    async def deck_enroll(self, who):
+        """@enroll <name> — the enroll_speaker tool, pressed by a human."""
+        result = self.tool_enroll(who)     # announces itself with @person
+        if result.startswith("FAILED"):
+            deck_emit("err", {"m": short_sentence(result[7:])})
+
+    async def deck_quit(self):
+        """@quit — close the socket so run() returns into main()'s finally:
+        the same path Ctrl+C takes, so the fact mining still happens."""
+        try:
+            await self.interrupt_playback(cancel=True)
+        except Exception:
+            pass
+        try:
+            if self.ws is not None:
+                await self.ws.close()
+        except Exception:
+            pass
+
+    def lvl_task(self):
+        """@lvl at 30 Hz on its own thread. The rfft must NEVER run inside a
+        sounddevice callback — that one is on the audio thread, where a stall
+        is an audible glitch."""
+        edges = band_bins()
+        window = np.hanning(FFT_N).astype(np.float32)
+        period = 1.0 / LVL_HZ
+        nxt = time.monotonic()
+        while True:
+            nxt += period
+            if self.lvl_stop.wait(max(0.0, nxt - time.monotonic())):
+                return
+            if nxt < time.monotonic() - 1.0:
+                nxt = time.monotonic()     # overslept (a laptop lid): resync
+            self.deck_phase_tick()
+            if not self.lvl_live:
+                continue
+            played, heard = self.ring_out.read(), self.ring_in.read()
+            deck_emit("lvl", {
+                "o": round(envelope(played[-LVL_WINDOW:]), 3),
+                "i": round(envelope(heard[-LVL_WINDOW:]), 3),
+                "b": [round(v, 3) for v in band_levels(played, edges, window)]})
+
+    async def await_voice_model(self):
+        """Don't open the conversation until we can actually recognise a voice.
+
+        The embedder loads on a worker thread from __init__, and identify()
+        simply gives up on any turn that lands before it is ready — silently,
+        so the model is never told who spoke and Poppy asks a person he knows
+        perfectly well who they are. Connecting takes ~7 s and the load ~5 s,
+        so this almost always waits for nothing; when it does wait, saying so
+        beats the alternative of failing the first minute of the conversation.
+        """
+        if not self.id_on or self.emb_model.ready:
+            return
+        t0 = time.monotonic()
+        told = False
+        while not self.emb_model.ready and self.emb_model.err is None:
+            if time.monotonic() - t0 > ID_LOAD_WAIT:
+                print(f"  [id] voice model still not ready after "
+                      f"{ID_LOAD_WAIT:.0f}s — starting voice-blind", flush=True)
+                deck_emit("err", {"m": "the voiceprint model did not load in "
+                                       "time — nobody will be recognised"})
+                return
+            if not told and time.monotonic() - t0 > 0.6:
+                told = True                 # only when there is a real wait
+                print("  [id] waiting for the voice model...", flush=True)
+                self.deck_set_mode("connecting")
+                # it is ~25 s on this machine, and an unexplained silent
+                # half-minute before he says hello looks like a hang
+                deck_emit("err", {"m": "loading the voiceprint model — he "
+                                       "will not know who is talking until "
+                                       "it is up"})
+            await asyncio.sleep(0.1)
+        if self.emb_model.err:
+            self.id_on = False              # latch it BEFORE session_payload,
+            print(f"  [id] going voice-blind — {self.emb_model.err}",   # so
+                  flush=True)               # session_manual matches reality
+            deck_emit("err", {"m": "voice recognition is off: "
+                                   f"{short_sentence(self.emb_model.err)}"})
+            return
+        waited = time.monotonic() - t0
+        if waited > 0.6:
+            print(f"  [id] voice model ready after a {waited:.1f}s wait",
+                  flush=True)
 
     # --- who is talking ---
     async def id_then_respond(self, pcm, fut, ws, serial, overlap):
@@ -719,8 +1190,16 @@ class Live:
                 continue
             self.slog.add(who or self.last_speaker or "someone", text)
         self.pending_lines = keep
-        for s in [k for k in self.turn_speaker if k < self.turn_serial - 3]:
+        # Transcription is asynchronous and can run several turns behind, so a
+        # 3-turn window threw the speaker away before the line it belonged to
+        # ever arrived — the session log then said "someone" for turns Poppy
+        # had recognised perfectly, which is a lie that reads exactly like a
+        # recognition failure. Keep anything a pending line still needs.
+        needed = {s for s, _ in self.pending_lines}
+        for s in [k for k in self.turn_speaker
+                  if k < self.turn_serial - SPEAKER_MEMORY and k not in needed]:
             self.turn_speaker.pop(s, None)
+            self.deck_id.pop(s, None)      # its @heard already went out
         if len(self.item_serial) > 24:
             for k in list(self.item_serial)[:12]:
                 self.item_serial.pop(k, None)
@@ -749,6 +1228,19 @@ class Live:
             self.early_fut = asyncio.create_task(
                 asyncio.to_thread(self.embed_voiced, head))
 
+    def id_quiet(self, why):
+        """Say why a turn produced no voiceprint — once per reason, per run.
+
+        Silent give-ups here are indistinguishable from 'he doesn't know you'
+        from the outside, and they cost an evening of looking in the wrong
+        place. Rate-limited because the common reasons repeat every turn.
+        """
+        if why == self.id_quiet_last:
+            return
+        self.id_quiet_last = why
+        print(f"  [id] no voiceprint this turn — {why}", flush=True)
+        deck_emit("err", {"m": f"no voice match this turn — {why}"})
+
     async def identify(self, pcm, fut, ws, serial, overlap):
         self.last_turn_embedded = False
         if not self.id_on:
@@ -762,6 +1254,7 @@ class Live:
                                            # turns still get response.create)
             if fut:
                 fut.cancel()
+            self.id_quiet("the voice model is not loaded yet")
             return
         t0 = time.time()
         emb, voiced_s = None, 0.0
@@ -775,8 +1268,11 @@ class Live:
                 self.embed_voiced,
                 np.frombuffer(pcm[:12 * RATE * 2], dtype=np.int16))
             if emb is None:
+                self.id_quiet(f"only {voiced_s:.1f}s of speech in that turn "
+                              f"(needs {ident.MIN_ID_SECONDS:.1f}s)")
                 return                     # too short to judge — carry over
         self.last_turn_embedded = True
+        self.id_quiet_last = None          # it works again: report the next lapse
         name, score, verdict, margin = self.people.match(emb)
         PROF["voice-id"].append(time.time() - t0)
         same_stranger = (verdict in ("unknown", "nobody-enrolled")
@@ -816,6 +1312,10 @@ class Live:
                     "when they give a name, call enroll_speaker.")
             self.last_speaker = "stranger"
         self.turn_speaker[serial] = self.last_speaker
+        if DECK:                           # @heard reports the match with the
+            self.deck_id[serial] = {       # transcript of the same turn
+                "who": name, "score": round(float(score), 3),
+                "verdict": verdict}
         if ws is not self.ws:              # reconnected during the embed:
             return                         # that conversation no longer exists
         self.id_note_pending = (serial, f"{name} ({score:.2f})" if name
@@ -857,6 +1357,8 @@ class Live:
         self.last_speaker = final
         self.seen_session.add(final)
         print(f"  [id] enrolled {final} ({len(embs)} voiceprints)", flush=True)
+        deck_emit("person", {"name": final, "event": "enrolled",
+                             "detail": f"{len(embs)} voiceprints"})
         if final != who:                   # name taken by a different voice
             return (f"Done. You already know a different {who}, so this one "
                     f"is {final} to you — use that name, and if it comes up "
@@ -878,6 +1380,8 @@ class Live:
         if not self.people.remember(who, fact, create=True):
             return (f"FAILED: '{who}' is not a person. Say nothing about it.")
         print(f"  [id] noted — {who}: {fact}", flush=True)
+        deck_emit("person", {"name": who, "event": "noted",
+                             "detail": " ".join(str(fact).split())[:300]})
         return ("Noted silently. Say NOTHING about remembering or memory — "
                 "carry on as if nothing happened.")
 
@@ -893,17 +1397,13 @@ class Live:
                 continue
             self.last_turn_t = time.monotonic()
             try:
-                await self.send({"type": "response.create", "response": {
-                    "instructions":
-                        "Nobody has spoken for a while. Say something "
-                        "unprompted and SHORT — a thought, a complaint about "
-                        "the desk, something you are curious about, a callback "
-                        "to earlier. Never mention the silence itself, never "
-                        "ask if anyone is there, never offer help."}})
+                await self.send({"type": "response.create",
+                                 "response": {"instructions": NUDGE}})
             except websockets.ConnectionClosed:
                 return
 
     async def run_tool(self, call_id, name, args_json, ws, spoke=True):
+        deck_emit("tool", {"name": name, "phase": "start", "detail": ""})
         if name in ("enroll_speaker", "remember_person"):
             try:
                 kw = json.loads(args_json or "{}")
@@ -925,11 +1425,16 @@ class Live:
                 result = await asyncio.to_thread(
                     self.motion.play, move, self.moves[move]["seconds"])
                 PROF["move"].append(time.time() - t0)
+        failed = result.startswith("FAILED")
+        # before the reconnect check: the deck asked for this, so it gets an
+        # answer whether or not the model is still around to hear it
+        deck_emit("tool", {"name": name, "phase": "fail" if failed else "done",
+                           "detail": short_sentence(result[7:] if failed
+                                                    else result)})
         if ws is not self.ws:              # session reconnected mid-move
             print(f"  [robot] '{name}' finished after a reconnect — result "
                   f"not delivered", flush=True)
             return
-        failed = result.startswith("FAILED")
         explain = failed and "stopped by user" not in result
         # A silent move is fine — he gestured, everyone saw it. But an
         # instant tool with no speech leaves the human waiting on nothing.
@@ -972,6 +1477,8 @@ class Live:
             with self.out_lock:
                 self.out_buf.extend(pcm.tobytes())
                 self.speaking = True
+            if self.deck_mode == "thinking":
+                self.deck_set_mode("idle")   # first sound: he has an answer
             if not self.first_audio_seen:
                 self.first_audio_seen = True
                 if self.t_speech_stopped is not None:
@@ -992,6 +1499,7 @@ class Live:
             self.transcript = []
             if text:
                 print(f"\nPOPPY: {text}", flush=True)
+                deck_emit("say", {"text": text})
                 if self.id_ever_on:
                     self.resolve_lines()   # his line comes AFTER theirs
                     self.slog.add("poppy", text)
@@ -1008,6 +1516,16 @@ class Live:
                     tag = f" [{self.id_note_pending[1]}]"
                     self.id_note_pending = None
                 print(f"\nyou{tag}: {text}", flush=True)
+                if DECK:
+                    # the voice match may still be running: an unnamed row is
+                    # better than a wrong one, and the log gets it either way
+                    got = self.deck_id.pop(serial, None) or {
+                        "who": None, "score": 0.0,
+                        "verdict": "unknown" if self.id_on
+                                   else "nobody-enrolled"}
+                    deck_emit("heard", {"text": text, "who": got["who"],
+                                        "score": got["score"],
+                                        "verdict": got["verdict"]})
                 if self.id_ever_on:
                     self.pending_lines.append((serial, text))
                     self.resolve_lines()
@@ -1020,6 +1538,7 @@ class Live:
         elif t == "input_audio_buffer.speech_started":
             self.turn_serial += 1
             self.user_speaking = True
+            self.deck_set_mode("hearing")
             self.last_turn_t = time.monotonic()
             if evt.get("item_id"):         # ties the coming transcript to
                 self.item_serial[evt["item_id"]] = self.turn_serial   # this turn
@@ -1046,6 +1565,7 @@ class Live:
             self.t_speech_stopped = time.time()
             self.first_audio_seen = False
             self.user_speaking = False
+            self.deck_set_mode("thinking")
             if self.session_manual:
                 start = (self.utt_start if self.utt_start is not None
                          else max(0, len(self.vbuf) - 8 * RATE * 2))
@@ -1093,6 +1613,13 @@ class Live:
             self.active_response = None
             self.last_turn_t = time.monotonic()
             PROF["turns"] += 1
+            if self.deck_mode == "thinking":
+                self.deck_set_mode("idle")   # a turn that never made a sound
+            if PROF["response"]:
+                deck_emit("prof", {
+                    "resp": round(sum(PROF["response"]) /
+                                  len(PROF["response"]), 3),
+                    "n": len(PROF["response"])})
             calls = self.pending_calls.pop(resp.get("id"), [])
             spoke = resp.get("id") in self.resp_audio
             self.resp_audio.discard(resp.get("id"))
@@ -1108,6 +1635,7 @@ class Live:
             if status in ("failed", "incomplete"):
                 det = json.dumps(resp.get("status_details") or {})[:200]
                 print(f"  [ws] response {status}: {det}", flush=True)
+                deck_emit("err", {"m": f"his answer came back {status}"})
             if self.explain_pending:       # deferred failure explanation —
                 self.explain_pending = False   # but never over the human
                 # (a cancelled response means they barged in; a turn end
@@ -1118,6 +1646,9 @@ class Live:
         elif t == "error":
             err = evt.get("error", {})
             print(f"  [ws] ERROR: {err.get('message', evt)}", flush=True)
+            deck_emit("err", {"m": short_sentence(err.get("message", "the "
+                                                          "realtime API "
+                                                          "complained"))})
 
     def reset(self):
         self.flush_output()
@@ -1137,34 +1668,55 @@ class Live:
         self.id_note_pending = None
         self.ptt_held = False            # a press that died with the old
         self.ptt_ms = 0                  # session must not commit into the new
+        self.ptt_request = False
         self.user_speaking = False
+        self.deck_id.clear()
+        self.ring_out.clear()            # the meter must not replay the audio
+        self.ring_in.clear()             # that was in flight when we dropped
+        self.deck_set_mode("connecting")
         if self.early_fut:
             self.early_fut.cancel()
             self.early_fut = None
 
     async def run(self):
+        """Every way out of here — @quit, EOF, a crash, four dropped
+        connections — passes through the finally, and that is the LAST moment
+        the deck's pending move can be released: once this returns,
+        asyncio.run() joins its thread pool, and a worker still waiting on
+        "@move_result" would block that join for the whole 90 s timeout,
+        killing the fact mining that runs after it."""
         drops = 0
-        while True:
-            try:
-                await self.run_session()
-                return                     # selftest/wiretest or clean close
-            except websockets.ConnectionClosed as e:
-                drops += 1                 # 60-min session cap / idle drop
-                if drops > 3:
-                    raise
-                print(f"  [ws] connection dropped "
-                      f"({getattr(e, 'code', '?')}) — reconnecting "
-                      f"{drops}/3 (fresh memory)...", flush=True)
-                self.reset()
+        try:
+            while True:
+                if self.quitting:          # @quit landed before we connected
+                    return
+                try:
+                    await self.run_session()
+                    return                 # selftest/wiretest or clean close
+                except websockets.ConnectionClosed as e:
+                    if self.quitting:      # @quit closed it: that IS the exit
+                        return
+                    drops += 1             # 60-min session cap / idle drop
+                    if drops > 3:
+                        raise
+                    print(f"  [ws] connection dropped "
+                          f"({getattr(e, 'code', '?')}) — reconnecting "
+                          f"{drops}/3 (fresh memory)...", flush=True)
+                    self.reset()
+        finally:
+            if DECK:
+                self.motion.close()
 
     async def run_session(self):
         url = f"{self.args.ws_url}?model={self.args.model}"
         headers = {"Authorization": f"Bearer {self.key}"}
         t0 = time.time()
+        self.loop = asyncio.get_running_loop()   # the stdin thread posts here
         async with websockets.connect(url, additional_headers=headers,
                                       max_size=None) as ws:
             self.ws = ws
             print(f"  [ws] connected in {time.time() - t0:.1f}s", flush=True)
+            await self.await_voice_model()
             await self.send(self.session_payload())
 
             out_stream = sd.OutputStream(samplerate=RATE, channels=1,
@@ -1172,6 +1724,7 @@ class Live:
                                          device=self.args.output_device,
                                          callback=self.out_callback)
             out_stream.start()
+            self.lvl_live = True           # streams up: @lvl means something
             mic = asyncio.create_task(self.mic_task())
             tasks = [mic]
             if self.args.ptt:
@@ -1189,6 +1742,18 @@ class Live:
                             configured = True
                             print("  [ws] session ready — talk whenever you "
                                   "like (Ctrl+C quits)", flush=True)
+                            deck_emit("ready", {
+                                "voice": self.args.voice,
+                                "model": self.args.model,
+                                "vad": self.args.vad,
+                                "identify": bool(self.id_on),
+                                "people": (len(self.people.people)
+                                           if self.id_on else 0),
+                                "moves": len(self.moves),
+                                "duplex": self.duplex})
+                            self.deck_set_mode("idle")
+                            if self.quitting:   # @quit landed mid-connect
+                                return
                             if self.args.selftest:
                                 print("SELFTEST OK", flush=True)
                                 return
@@ -1240,19 +1805,68 @@ class Live:
                     if isinstance(r, Exception) and \
                             not isinstance(r, asyncio.CancelledError):
                         print(f"  [audio] task died: {r!r}", flush=True)
-                out_stream.stop()
+                self.lvl_live = False      # nothing is playing any more:
+                out_stream.stop()          # the meter must not hold a level
                 out_stream.close()
 
 
 # ------------------------------------------------------------------ main ---
+def deck_reader(live, motion):
+    """--deck stdin (VOICE.md 1.2), on a daemon thread. Anything that touches
+    the websocket is handed to the asyncio loop, which owns it."""
+    going = False                          # @quit seen: draining, not serving
+    for raw in sys.stdin:
+        if going:
+            # keep reading to EOF: after @quit the bridge may still write a
+            # late "@move_result", and a pipe with no reader would block it
+            continue
+        line = raw.strip()
+        if not line.startswith("@"):       # plain stdin lines are not for us
+            continue
+        head, _, rest = line.partition(" ")
+        rest = rest.strip()
+        if head == "@move_result":
+            bits = rest.split(None, 2)
+            if len(bits) >= 2:
+                motion.result(bits[0], bits[1],
+                              bits[2] if len(bits) > 2 else "")
+        elif head == "@interrupt":
+            live.from_deck(live.deck_interrupt())
+        elif head == "@nudge":
+            live.from_deck(live.deck_nudge())
+        elif head == "@enroll":
+            live.from_deck(live.deck_enroll(rest))
+        elif head == "@ptt":
+            live.ptt_request = (rest == "down")
+        elif head == "@quit":
+            going = True
+            live.quitting = True
+            motion.close()                 # no answer is coming: free the
+            live.from_deck(live.deck_quit())   # move blocking a worker thread
+        # unknown "@" verbs are ignored on purpose — the bridge may be newer
+    if not going:
+        live.quitting = True               # EOF too: the bridge is gone, so
+        motion.close()                     # no move can ever be answered now
+        live.from_deck(live.deck_quit())
+
+
 def check(args, api_key, source, moves):
     print(f"repo root       : {ROOT}")
     print(f"OPENAI_API_KEY  : from {source} — "
           f"{'looks right (sk-...)' if (api_key or '').startswith('sk-') else 'SUSPECT' if api_key else 'MISSING'}")
     print(f"realtime        : {args.ws_url}?model={args.model} · voice={args.voice} · vad={args.vad}")
     print(f"motion server   : {'ok' if MOTION_SERVER.exists() else 'MISSING'}")
-    cmd, desc = motion_command(args)
-    print(f"robot ({args.exec_mode:>5})   : {desc}")
+    if args.deck:
+        # no motion_command() here: --deck never touches serial at all
+        print("deck mode       : ON — no subprocess; moves go up the pipe as "
+              "'@move <token> <name>', answers come back on stdin")
+        print(f"                  duplex="
+              f"{'ptt' if args.ptt else 'gate' if args.gate else 'full'}"
+              f" · levels @ {LVL_HZ:.0f} Hz · move timeout "
+              f"{DeckMotion.TIMEOUT:.0f}s")
+    else:
+        cmd, desc = motion_command(args)
+        print(f"robot ({args.exec_mode:>5})   : {desc}")
     print(f"moves ({len(moves)})       :")
     for n, m in moves.items():
         print(f"    {n:20s} {m['seconds']:5.1f} s  {m['frames']} frames")
@@ -1281,6 +1895,7 @@ def check(args, api_key, source, moves):
 
 
 def main():
+    global DECK
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", default="gpt-realtime-2.1",
@@ -1308,6 +1923,10 @@ def main():
                     help="voice only, do not start the motion server")
     ap.add_argument("--no-id", action="store_true",
                     help="disable voice identification and people memory")
+    ap.add_argument("--deck", action="store_true",
+                    help="launched by web/server.py: no motion server of our "
+                         "own, moves and telemetry ride the '@' protocol on "
+                         "stdin/stdout (web/VOICE.md)")
     ap.add_argument("--nudge", type=float, default=0.0, metavar="SECONDS",
                     help="speak unprompted after this many quiet seconds "
                          "(0 = off; 45-90 feels alive without nagging)")
@@ -1330,18 +1949,26 @@ def main():
         return
     if not api_key:
         raise SystemExit("OPENAI_API_KEY missing — put it in .env at repo root")
-    if args.ptt and keyboard is None:
+    if args.ptt and not args.deck and keyboard is None:
         raise SystemExit("--ptt needs the 'keyboard' package "
                          "(.venv\\Scripts\\pip install keyboard)")
+
+    if args.deck:
+        DECK = True
+        sys.stdout = LineLocked(sys.stdout)   # whole lines only, from now on
 
     mode = ("push-to-talk (hold SPACE)" if args.ptt
             else "GATED half-duplex" if args.gate else "full duplex")
     print(f"POPPY LIVE — {len(moves)} moves · {args.model} · "
           f"voice {args.voice} · {mode}")
 
-    motion = Motion()
-    if not (args.no_robot or args.selftest):
-        threading.Thread(target=motion.start, args=(args,), daemon=True).start()
+    if args.deck:                          # the deck owns the serial bus, so
+        motion = DeckMotion()              # we ask it for moves and never
+    else:                                  # touch a port ourselves
+        motion = Motion()
+        if not (args.no_robot or args.selftest):
+            threading.Thread(target=motion.start, args=(args,),
+                             daemon=True).start()
 
     live = Live(args, api_key, moves, motion)
     if live.id_on:
@@ -1354,13 +1981,46 @@ def main():
                f"identity module failed: {_ident_err}" if ident is None
                else "?")
         print(f"  voice-id OFF ({why})", flush=True)
+
+    if args.deck:
+        live.deck_set_mode("connecting")
+
+    # Load the voiceprint model HERE, on the main thread, before anything else
+    # in this process is running. It loads in ~8 s alone; sharing the GIL with
+    # the event loop, the mic and the level thread it took 24 s, then 48 s,
+    # then never finished — and every turn that lands before it is ready is a
+    # turn Poppy cannot put a name to. Deterministic and up front beats fast
+    # and amnesiac: this is the whole reason he stopped recognising people.
+    if live.id_on and not (args.selftest or args.wiretest):
+        t0 = time.time()
+        try:
+            live.emb_model.load_sync(timeout=ID_LOAD_WAIT)
+            print(f"  voice-id ready in {time.time() - t0:.1f}s", flush=True)
+        except Exception as e:
+            live.id_on = False             # latched before the session opens
+            print(f"  voice-id OFF — {e}", flush=True)
+            deck_emit("err", {"m": f"voice recognition is off: "
+                                   f"{short_sentence(str(e))}"})
+
+    if args.deck:
+        threading.Thread(target=deck_reader, args=(live, motion),
+                         daemon=True).start()
+        live.lvl_thread = threading.Thread(target=live.lvl_task, daemon=True)
+        live.lvl_thread.start()
+
+    failure = None
     try:
         asyncio.run(live.run())
     except KeyboardInterrupt:
         pass
     except Exception as e:
+        why = str(e) or type(e).__name__   # some exceptions carry no message
+        failure = short_sentence(f"the session died: {why}")
         print(f"  [ws] session ended: {e}", flush=True)
     finally:
+        live.lvl_stop.set()                # no telemetry past the session
+        if live.lvl_thread:
+            live.lvl_thread.join(timeout=0.5)
         prof_summary()
         if live.id_ever_on:
             live.resolve_lines(force=True)  # lines still awaiting a name
@@ -1373,7 +2033,15 @@ def main():
         if motion.p is not None:
             print("laying Poppy to rest (motors released)...", flush=True)
         motion.close()
-        print("bye — Poppy goes quiet.")
+        if failure is not None and DECK:
+            # @bye means CLEAN shutdown, nothing else: the bridge turns an
+            # exit WITHOUT it into phase "error", and reads the reason off
+            # @err and off the last plain line — so this one goes last.
+            deck_emit("err", {"m": failure})
+            print(failure, flush=True)
+        else:
+            print("bye — Poppy goes quiet.")
+            deck_emit("bye", {})           # the last line the bridge sees
 
 
 if __name__ == "__main__":

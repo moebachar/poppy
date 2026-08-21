@@ -1,8 +1,39 @@
-import { useEffect, useState } from 'react'
-import { apiRecordAbort, apiRecordStart, apiRecordStop, apiState } from '../api'
+import { useEffect, useRef, useState } from 'react'
+import {
+  apiDeleteMove,
+  apiRecordAbort,
+  apiRecordStart,
+  apiRecordStop,
+  apiRenameMove,
+  apiState,
+} from '../api'
 import { useStore } from '../state'
 import { MOTOR_NAMES, motorLabel } from '../types'
 import { IconRec } from './icons'
+import {
+  listenForStop,
+  primeMicPermission,
+  voiceSupported,
+  type VoiceStatus,
+} from '../voice'
+
+const VOICE_KEY = 'poppy.voiceStop'
+
+function voiceEnabled(): boolean {
+  try {
+    return localStorage.getItem(VOICE_KEY) !== '0'
+  } catch {
+    return true
+  }
+}
+
+function setVoiceEnabled(on: boolean): void {
+  try {
+    localStorage.setItem(VOICE_KEY, on ? '1' : '0')
+  } catch {
+    /* private window: the toggle just won't persist */
+  }
+}
 
 const NAME_RE = /^[a-z0-9_-]{1,32}$/
 
@@ -43,6 +74,7 @@ function Picking() {
   const power = useStore((s) => s.power)
   const cancelTeach = useStore((s) => s.cancelTeach)
   const stepPct = useStore((s) => s.stepPct)
+  const [voiceOn, setVoiceOn] = useState(voiceEnabled() && voiceSupported())
 
   const ids = Object.keys(picked)
     .map(Number)
@@ -70,7 +102,7 @@ function Picking() {
           <button
             type="button"
             className="stepper"
-            disabled={picked[id] >= 60}
+            disabled={picked[id] >= 100}
             onClick={() => stepPct(id, +5)}
           >
             +
@@ -94,43 +126,103 @@ function Picking() {
         <button type="button" className="key" onClick={cancelTeach}>
           CANCEL
         </button>
+        {voiceSupported() && (
+          <button
+            type="button"
+            className={`key voice${voiceOn ? ' on' : ''}`}
+            title="say STOP to end the take instead of reaching for the mouse"
+            onClick={() => {
+              const next = !voiceOn
+              setVoiceOn(next)
+              setVoiceEnabled(next)
+              if (next) primeMicPermission()   // ask now, not mid-pose
+            }}
+          >
+            VOICE {voiceOn ? 'ON' : 'OFF'}
+          </button>
+        )}
       </div>
     </div>
   )
 }
 
-function Armed() {
+const TAKE = '_take'
+
+function Armed({ onFinished }: { onFinished: () => void }) {
   const recording = useStore((s) => s.recording)
   const motors = useStore((s) => s.motors)
-  const [name, setName] = useState('')
-  const [saving, setSaving] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [voice, setVoice] = useState<VoiceStatus>('idle')
+  const [heard, setHeard] = useState('')
 
   const nameOf = (id: number) =>
     motors.find((m) => m.id === id)?.name ?? MOTOR_NAMES[id] ?? String(id)
 
   const loose = recording ? recording.loose : {}
-  const valid = NAME_RE.test(name)
 
-  const save = () => {
-    if (saving) return
-    setSaving(true)
-    apiRecordStop(name)
-      .then(() => apiState().then((s) => useStore.getState().applyState(s)))
+  const finish = () => {
+    if (busy) return
+    setBusy(true)
+    apiRecordStop(TAKE)
+      .then(() => {
+        onFinished()
+        return apiState().then((s) => useStore.getState().applyState(s))
+      })
       .catch(() => {})
-      .finally(() => setSaving(false))
+      .finally(() => setBusy(false))
   }
+
+  // Hands-free finish: both hands are on the robot while teaching.
+  const finishRef = useRef(finish)
+  finishRef.current = finish
+  useEffect(() => {
+    if (!voiceEnabled() || !voiceSupported()) return
+    let done = false
+    const log = (line: string) =>
+      useStore.getState().pushEvent(new Date().toTimeString().slice(0, 8), line)
+    const cancel = listenForStop(
+      () => {
+        if (done) return
+        done = true
+        finishRef.current()          // always the live handler, never a stale one
+      },
+      (s, text) => {
+        setVoice(s)
+        if (text) setHeard(text)
+      },
+      log,
+    )
+    return cancel
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const discard = () => {
-    if (saving) return
-    setSaving(true)
+    if (busy) return
+    setBusy(true)
     apiRecordAbort()
       .catch(() => {})
-      .finally(() => setSaving(false))
+      .finally(() => setBusy(false))
   }
+
+  const voiceLine =
+    voice === 'listening'
+      ? `SAY “STOP” TO FINISH${heard ? ` · ${heard}` : ''}`
+      : voice === 'denied'
+        ? 'VOICE OFF · MIC BLOCKED'
+        : voice === 'offline'
+          ? 'VOICE OFF · NO NETWORK'
+          : voice === 'unsupported'
+            ? 'VOICE OFF · BROWSER'
+            : ''
 
   return (
     <div className="teach-body">
       <Elapsed />
+      {voiceLine && (
+        <div className={`voice-line${voice === 'listening' ? ' live' : ''}`}>
+          {voiceLine}
+        </div>
+      )}
       <div className="rec-loose">
         {Object.keys(loose)
           .map(Number)
@@ -141,10 +233,71 @@ function Armed() {
             </span>
           ))}
       </div>
+      <div className="teach-keys">
+        <button type="button" className="key" disabled={busy} onClick={finish}>
+          FINISH
+        </button>
+        <button type="button" className="key" disabled={busy} onClick={discard}>
+          DISCARD
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/** Name + the LLM-facing fields, filled in once the body is back at rest. */
+function Naming({
+  source,
+  initial,
+  onClose,
+}: {
+  source: string
+  initial?: { name: string; description: string; when: string[] }
+  onClose: () => void
+}) {
+  const [name, setName] = useState(initial?.name ?? '')
+  const [desc, setDesc] = useState(initial?.description ?? '')
+  const [when, setWhen] = useState((initial?.when ?? []).join('\n'))
+  const [busy, setBusy] = useState(false)
+  const valid = NAME_RE.test(name) && !name.startsWith('_')
+
+  const save = () => {
+    if (!valid || busy) return
+    setBusy(true)
+    apiRenameMove(source, name, {
+      description: desc.trim(),
+      when: when
+        .split('\n')
+        .map((w) => w.trim())
+        .filter(Boolean),
+    })
+      .then(onClose)                     // stays open on error (name taken…)
+      .catch(() => {})
+      .finally(() => setBusy(false))
+  }
+
+  const discard = () => {
+    if (busy) return
+    if (initial) {
+      onClose()                          // editing: leave the move untouched
+      return
+    }
+    setBusy(true)
+    apiDeleteMove(source)
+      .catch(() => {})
+      .finally(() => {
+        setBusy(false)
+        onClose()
+      })
+  }
+
+  return (
+    <div className="teach-body">
       <div className="saveas">
-        <span className="teach-hint">SAVE AS</span>
+        <span className="teach-hint">NAME</span>
         <input
           className="name-input"
+          autoFocus
           value={name}
           maxLength={32}
           spellCheck={false}
@@ -154,26 +307,44 @@ function Armed() {
           }
           onKeyDown={(e) => {
             if (e.repeat) return
-            if (e.key === 'Enter' && valid && !saving) save()
+            if (e.key === 'Enter') save()
           }}
+        />
+      </div>
+      <div className="metafield">
+        <span className="teach-hint">DESCRIPTION</span>
+        <textarea
+          className="meta-input"
+          rows={3}
+          maxLength={800}
+          spellCheck={false}
+          placeholder="what the body does, in Poppy's own terms"
+          value={desc}
+          onChange={(e) => setDesc(e.target.value)}
+        />
+      </div>
+      <div className="metafield">
+        <span className="teach-hint">WHEN · ONE PER LINE</span>
+        <textarea
+          className="meta-input"
+          rows={4}
+          spellCheck={false}
+          placeholder={'someone walks in\nsomeone is leaving'}
+          value={when}
+          onChange={(e) => setWhen(e.target.value)}
         />
       </div>
       <div className="teach-keys">
         <button
           type="button"
           className="key"
-          disabled={!valid || saving}
+          disabled={!valid || busy}
           onClick={save}
         >
           SAVE
         </button>
-        <button
-          type="button"
-          className="key"
-          disabled={saving}
-          onClick={discard}
-        >
-          DISCARD
+        <button type="button" className="key" disabled={busy} onClick={discard}>
+          {initial ? 'CANCEL' : 'DISCARD'}
         </button>
       </div>
     </div>
@@ -184,12 +355,38 @@ export default function TeachPanel() {
   const power = useStore((s) => s.power)
   const teachActive = useStore((s) => s.teachActive)
   const startTeach = useStore((s) => s.startTeach)
+  const editingMove = useStore((s) => s.editingMove)
+  const setEditingMove = useStore((s) => s.setEditingMove)
+  const moves = useStore((s) => s.moves)
+  const [naming, setNaming] = useState(false)
+
+  useEffect(() => {
+    if (power === 'off' || power === 'error') setNaming(false)
+  }, [power])
+
+  const edited = editingMove
+    ? moves.find((m) => m.name === editingMove)
+    : undefined
 
   return (
     <section className="teach">
-      <div className="panel-label">TEACH / RECORD</div>
+      <div className="panel-label">
+        {naming || edited ? 'MOVE DETAILS' : 'TEACH / RECORD'}
+      </div>
       {power === 'recording' ? (
-        <Armed />
+        <Armed onFinished={() => setNaming(true)} />
+      ) : naming ? (
+        <Naming source={TAKE} onClose={() => setNaming(false)} />
+      ) : edited ? (
+        <Naming
+          source={edited.name}
+          initial={{
+            name: edited.name,
+            description: edited.description ?? '',
+            when: edited.when ?? [],
+          }}
+          onClose={() => setEditingMove(null)}
+        />
       ) : teachActive ? (
         <Picking />
       ) : (
@@ -198,7 +395,11 @@ export default function TeachPanel() {
             type="button"
             className="key wide"
             disabled={power !== 'ready'}
-            onClick={startTeach}
+            onClick={() => {
+              // ask for the mic now — never once both hands are on the robot
+              if (voiceEnabled() && voiceSupported()) primeMicPermission()
+              startTeach()
+            }}
           >
             TEACH
           </button>

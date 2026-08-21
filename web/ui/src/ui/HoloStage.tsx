@@ -2,15 +2,39 @@
 // Creates the module once, pushes state diffs in, routes pick/hover back.
 import { useEffect, useRef, useState } from 'react'
 import { createHolo } from '../holo'
-import type { HoloMode, HoloMotor } from '../holo'
+import type { HoloMode, HoloMotor, VoicePhase } from '../holo'
+import { readLevels, subscribeLevels } from '../audioBus'
 import { useStore } from '../state'
 import type { DeckState } from '../state'
-import type { Power } from '../types'
+import type { Power, VoiceState } from '../types'
+
+/** VOICE.md §3 — the aura's ceiling; the module wants a cheap setter, not a feed. */
+const AURA_FRAME = 1000 / 30
 
 function modeOf(p: Power): HoloMode {
   if (p === 'starting') return 'awakening'
   if (p === 'off' || p === 'error') return 'dormant'
   return 'live' // ready | playing | recording | released | cooling
+}
+
+// The bridge's phase union is the aura's plus two states the field has no look
+// for: 'starting' is the spawn, which reads as 'connecting'; 'error' means
+// there is nothing left to listen to, so the field goes away.
+function voicePhaseOf(v: VoiceState | null): VoicePhase {
+  if (!v) return 'off'
+  if (v.on) {
+    if (v.phase === 'starting') return 'connecting'
+    if (v.phase === 'error' || v.phase === 'off') return 'off'
+    return v.phase
+  }
+  // No session, but a guided enrolment holds the mic and streams its envelope
+  // (VOICE.md §2.5): the aura reacting to the person is the whole reason that
+  // flow lives in the deck instead of a terminal.
+  const e = v.enroll
+  if (e && e.status !== 'done') {
+    return e.status === 'recording' ? 'hearing' : 'listening'
+  }
+  return 'off'
 }
 
 function motorsOf(s: DeckState): HoloMotor[] {
@@ -27,7 +51,13 @@ function motorsOf(s: DeckState): HoloMotor[] {
 export default function HoloStage() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const holoRef = useRef<ReturnType<typeof createHolo> | null>(null)
-  const [topView, setTopView] = useState(false)
+  const [view, setView] = useState<'front' | 'top' | 'side'>('front')
+
+  const pickView = (v: 'top' | 'side') => {
+    const next = view === v ? 'front' : v
+    setView(next)
+    holoRef.current?.setView(next)
+  }
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -48,7 +78,45 @@ export default function HoloStage() {
     let lastPower: Power | null = null
     let zeroTimer: number | undefined
 
+    // ---- the voice aura (VOICE.md §3, §4.1) ------------------------------
+    // Levels arrive 30 times a second and must never reach React, so they come
+    // off the module-scope bus and go straight into the module — the same shape
+    // as the store subscription below, outside the render tree entirely.
+    let auraPhase: VoicePhase = 'off'
+    let auraTimer: number | undefined
+
+    // The one place that talks to setVoice: a level packet, a phase change and
+    // the stale-feed timer all come through here, so only ever one is pending.
+    const drive = () => {
+      window.clearTimeout(auraTimer)
+      if (auraPhase === 'off') return
+      const l = readLevels()
+      holo.setVoice({ phase: auraPhase, out: l.out, in: l.in, bands: l.bands })
+      // A feed that STOPS is not the same as silence. audioBus decays a stale
+      // reading, but only when something asks — so keep asking until it has
+      // actually bled out, or the field freezes lit on the last packet before
+      // the socket dropped. Two frames of slack: a live feed re-arms first.
+      if (l.out > 0.002 || l.in > 0.002) {
+        auraTimer = window.setTimeout(drive, AURA_FRAME * 2)
+      }
+    }
+
+    const setAuraPhase = (p: VoicePhase) => {
+      if (p === auraPhase) return
+      auraPhase = p
+      if (p === 'off') {
+        window.clearTimeout(auraTimer)
+        holo.setVoice(null) // the aura fades itself out, then frees itself
+        return
+      }
+      drive() // paint the new phase now, do not wait for the next packet
+    }
+
+    const unsubLevels = subscribeLevels(drive)
+
     const push = (s: DeckState) => {
+      setAuraPhase(voicePhaseOf(s.voice))
+
       const mode = modeOf(s.power)
       if (mode !== lastMode) {
         lastMode = mode
@@ -114,9 +182,11 @@ export default function HoloStage() {
 
     return () => {
       unsub()
+      unsubLevels()
       ro.disconnect()
       if (awakenTimer !== undefined) window.clearTimeout(awakenTimer)
       window.clearTimeout(zeroTimer)
+      window.clearTimeout(auraTimer)
       holoRef.current = null
       holo.dispose()
     }
@@ -127,18 +197,24 @@ export default function HoloStage() {
       <canvas ref={canvasRef} className="holo-canvas" />
       <div className="stage-tools">
         <button
-          className={topView ? 'stage-reset active' : 'stage-reset'}
-          onClick={() => {
-            const next = !topView
-            setTopView(next)
-            holoRef.current?.setTopView(next)
-          }}
+          className={view === 'top' ? 'stage-reset active' : 'stage-reset'}
+          onClick={() => pickView('top')}
         >
           TOP VIEW
         </button>
         <button
+          className={view === 'side' ? 'stage-reset active' : 'stage-reset'}
+          onClick={() => pickView('side')}
+        >
+          SIDE VIEW
+        </button>
+        <button
           className="stage-reset"
-          onClick={() => holoRef.current?.resetYaw()}
+          onClick={() => {
+            setView('front')
+            holoRef.current?.setView('front')
+            holoRef.current?.resetYaw()
+          }}
         >
           FACE FRONT
         </button>

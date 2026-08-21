@@ -49,7 +49,9 @@ POSES = HERE / "poses"
 TEMP_HARD = 52          # release everything at this temperature
 TEMP_RESUME = 45        # ...and re-hold automatically once back down here
 HOLD_TORQUE = 60        # idle holding torque %% — full 100 only during moves
-REC_HZ = 20.0           # teach-mode tick rate (07_record_replay's default)
+REC_HZ = 20.0           # frames stored per second (07_record_replay's format)
+FOLLOW_HZ = 40.0        # goal-follows-hand rate: 2x REC_HZ halves the error
+                        # the hand has to fight between ticks
 EXPECTED_IDS = [33, 34, 35, 36, 37, 41, 42, 43, 44, 51, 52, 53, 54]  # 00_read_only's map
 
 PRINT_LOCK = threading.Lock()   # one lock for stdout — lines never interleave
@@ -79,10 +81,15 @@ class Body:
         self.others = [i for i in present if i not in SEAM_IDS]
         self.holding = False
 
-    def positions(self):
-        pos = dict(zip(self.others, self.dxl.get_present_position(self.others)))
-        for i in self.seam:
-            pos[i] = present_deg(self.dxl, i)
+    def positions(self, ids=None):
+        """Read every present motor, or just `ids` (teach ticks read the few
+        loose joints only — the whole body is read once per stored frame)."""
+        want = self.present if ids is None else [i for i in ids if i in self.present]
+        others = [i for i in want if i not in SEAM_IDS]
+        pos = dict(zip(others, self.dxl.get_present_position(others))) if others else {}
+        for i in want:
+            if i in SEAM_IDS:
+                pos[i] = present_deg(self.dxl, i)
         return pos
 
     def set_goal(self, i, v):
@@ -187,6 +194,27 @@ def telemetry(body):
                 separators=(",", ":")))
 
 
+TEACH_TORQUE_MAX = 20   # feel 100 % — the old scale's 20, "holds its weight"
+TEACH_P_MAX = 12        # ...still far below the factory P of 32
+
+
+def feel_to_hw(pct, model):
+    """Operator 'feel' % -> (torque limit %, MX P gain, AX compliance slope).
+
+    The whole scale lives in the SOFT band on purpose: a picked motor is one
+    the hand is about to move, so it must never be rigid — a joint you want
+    rigid you simply don't pick. feel 100 lands at what the raw register
+    scale called 20 % (just enough to carry the limb's own weight); feel 5 is
+    all but free. What the hand fights is mostly the position loop (P gain x
+    the error since the last tick), so the gain softens along the same curve.
+    """
+    f = max(0.0, min(100.0, float(pct))) / 100.0
+    torque = max(1, int(round(TEACH_TORQUE_MAX * f ** 1.5)))
+    if str(model).startswith("AX"):            # AX-12: compliance slope, 128 = softest
+        return torque, None, (128 if f <= 0.6 else 64)
+    return torque, max(2, int(round(2 + (TEACH_P_MAX - 2) * f ** 1.2))), None
+
+
 def restance(body, stance, max_settle):
     """Recording over: torque ceilings back to 100, stiff, slow travel home."""
     body.stiffen()
@@ -195,6 +223,45 @@ def restance(body, stance, max_settle):
     except Exception as e:
         out(f"# return-to-stance skipped: {e}")
     body.set_torque(HOLD_TORQUE)
+
+
+def soften(dxl, loose, present):
+    """Put the picked motors into teach feel; return what to restore after."""
+    ids = [i for i, pct in loose.items() if pct > 0 and i in present]
+    models = dict(zip(ids, dxl.get_model(ids))) if ids else {}
+    saved = {}
+    for i, pct in loose.items():
+        if pct <= 0:
+            dxl.disable_torque((i,))       # 0 = truly free (coast, no drag)
+            continue
+        torque, p_gain, slope = feel_to_hw(pct, models.get(i, "MX-28"))
+        dxl.set_moving_speed({i: 150})
+        dxl.set_torque_limit({i: torque})
+        try:                               # soften the position loop itself
+            if p_gain is not None:
+                p, ig, d = dxl.get_pid_gain((i,))[0]
+                saved[i] = ("pid", (p, ig, d))
+                dxl.set_pid_gain({i: (p_gain, ig, d)})
+            else:
+                saved[i] = ("slope", dxl.get_compliance_slope((i,))[0])
+                dxl.set_compliance_slope({i: (slope, slope)})
+        except Exception as e:
+            out(f"# motor {i}: gain softening skipped ({e})")
+        out(f"# motor {i}: feel {pct:.0f}% -> torque {torque}%"
+            + (f", P {p_gain}" if p_gain is not None else f", slope {slope}"))
+    return saved
+
+
+def unsoften(dxl, saved):
+    """Put the position-loop gains back the way we found them."""
+    for i, (kind, val) in saved.items():
+        try:
+            if kind == "pid":
+                dxl.set_pid_gain({i: val})
+            else:
+                dxl.set_compliance_slope({i: val})
+        except Exception as e:
+            out(f"# motor {i}: gain restore failed ({e})")
 
 
 def record(body, loose, cmds, stance, max_settle):
@@ -209,24 +276,34 @@ def record(body, loose, cmds, stance, max_settle):
     if not loose:
         out("# WARNING: empty loose map — nothing will be movable by hand")
     body.stiffen()                         # rigid at 100%, fixed goals
-    for i, pct in loose.items():
-        if pct <= 0:
-            dxl.disable_torque((i,))       # 0 = truly free (coast, no drag)
-            continue
-        dxl.set_moving_speed({i: 150})
-        dxl.set_torque_limit({i: pct})
+    saved = soften(dxl, loose, body.present)
+    try:
+        return record_loop(body, loose, cmds, stance, max_settle)
+    finally:
+        unsoften(dxl, saved)
+
+
+def record_loop(body, loose, cmds, stance, max_settle):
+    """The teach tick: follow the hand at FOLLOW_HZ, store frames at REC_HZ."""
     out("RECORD_START")
     frames, t0 = [], time.time()
-    period, last_temp = 1.0 / REC_HZ, t0
+    period, last_temp = 1.0 / FOLLOW_HZ, t0
+    frame_period = 1.0 / REC_HZ
+    followed = [i for i, pct in loose.items() if pct > 0]
+    next_frame = t0
     while True:
         tick = time.time()
+        # a stored frame needs the whole body; the follow ticks in between
+        # only need the joints the hand is holding (keeps the bus quiet)
+        store = tick >= next_frame
         with BUS_GATE:
-            pos = body.positions()
-            for i, pct in loose.items():   # goal follows the hand: what you
-                if pct > 0:                # move, stays
-                    body.set_goal(i, pos[i])
-        frames.append({"t": round(tick - t0, 3),
-                       "pos": {str(i): round(p, 2) for i, p in pos.items()}})
+            pos = body.positions(None if store else followed)
+            for i in followed:             # goal follows the hand: what you
+                body.set_goal(i, pos[i])   # move, stays
+        if store:
+            next_frame = max(tick, next_frame + frame_period)
+            frames.append({"t": round(tick - t0, 3),
+                           "pos": {str(i): round(p, 2) for i, p in pos.items()}})
         if tick - last_temp > 2:
             last_temp = tick
             t_now = body.max_temp()

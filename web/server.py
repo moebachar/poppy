@@ -27,6 +27,8 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+import voicelink                  # Poppy Live supervisor (web/voicelink.py)
+
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 MOTION = ROOT / "scripts" / "motion"
@@ -54,6 +56,8 @@ MOTORS = {i: {"id": i, "name": n, "model": "MX-28", "present": False,
 CHILD = None                     # subprocess.Popen of the motion server
 LOOP = None                      # asyncio loop, set at startup
 CLIENTS = set()                  # live websockets
+LVL_BUSY = set()                 # clients whose previous {"t":"lvl"} is still
+                                 # in flight (loop thread only)
 READY_EVT = threading.Event()
 BYE_EVT = threading.Event()
 STATE_LOCK = threading.RLock()   # guards STATE / MOTORS / CHILD mutation
@@ -114,10 +118,16 @@ def list_moves():
     except OSError:
         return rows
     for p in paths:
+        if p.stem.startswith("_"):
+            continue                                 # hidden takes (_take etc.)
         try:
-            frames = json.loads(p.read_text())["frames"]
+            doc = json.loads(p.read_text(encoding="utf-8"))
+            frames = doc["frames"]
             secs = round(frames[-1]["t"] - frames[0]["t"], 1) if frames else 0.0
-            rows.append({"name": p.stem, "seconds": secs, "frames": len(frames)})
+            when = doc.get("when") or []
+            rows.append({"name": p.stem, "seconds": secs, "frames": len(frames),
+                         "description": doc.get("description") or "",
+                         "when": [str(w) for w in when if str(w).strip()]})
         except Exception:
             continue                                 # unreadable file: skip
     return rows
@@ -128,6 +138,11 @@ def full_state():
         st = dict(STATE)
         st["motors"] = [dict(MOTORS[i]) for i in sorted(MOTORS)]
     st["moves"] = list_moves()
+    # LAST, deliberately: list_moves() is tens of ms of disk I/O and the voice
+    # phase changes several times a second. Taken any earlier, this snapshot
+    # would already be stale by the time it goes out and would overwrite the
+    # newer {"t":"voice"} the deck received while we were reading move files.
+    st["voice"] = voicelink.voice_state()
     return st
 
 
@@ -137,22 +152,43 @@ def broadcast(obj):
     if LOOP is None or not CLIENTS:
         return
     payload = json.dumps(obj)
+    # 'lvl' is the ONE message a slow client may miss (VOICE.md 2.7): it is
+    # 30 Hz telemetry and the next one is 33 ms away. state/event/chat/voice
+    # are never dropped.
+    droppable = obj.get("t") == "lvl"
     try:
-        LOOP.call_soon_threadsafe(_fan_out, payload)
+        LOOP.call_soon_threadsafe(_fan_out, payload, droppable)
     except RuntimeError:
         pass                                         # loop already closed
 
 
-def _fan_out(payload):
+def _fan_out(payload, droppable):
+    """One task per client — except for a client that is already behind.
+
+    A suspended laptop leaves its socket open and zero-windowed: send_text
+    never raises, so 30 lvl/s used to pile up tasks (each holding a payload)
+    until TCP gave up, which on Windows is two hours.
+    """
     for ws in list(CLIENTS):
-        LOOP.create_task(_send_one(ws, payload))
+        if droppable:
+            if ws in LVL_BUSY:
+                continue                             # still owes us one
+            LVL_BUSY.add(ws)
+        LOOP.create_task(_send_one(ws, payload, droppable))
 
 
-async def _send_one(ws, payload):
+async def _send_one(ws, payload, droppable):
     try:
         await ws.send_text(payload)
     except Exception:
         CLIENTS.discard(ws)
+        try:
+            await ws.close()             # discarding it is not enough: the
+        except Exception:                # socket would linger with its buffers
+            pass
+    finally:
+        if droppable:
+            LVL_BUSY.discard(ws)
 
 
 def set_phase(power, **extra):
@@ -205,6 +241,7 @@ def handle_event(line):
     global PENDING_LOOSE
     broadcast({"t": "event", "ts": now_hms(), "line": line})
     word = line.split(None, 1)[0]
+    voicelink.on_motion_event(word, line)   # a voice move may be waiting on it
     if word == "READY":
         set_phase("ready", playing=None)
         READY_EVT.set()
@@ -238,6 +275,33 @@ def handle_event(line):
         set_phase("error", error=line)
 
 
+def watch_code(proc):
+    """Say so when the motion server is edited under a running child.
+
+    The child is a snapshot taken at power-on: edits on disk do nothing until
+    it is respawned, which has quietly cost a test round more than once.
+    """
+    src = MOTION / "10_motion_server.py"
+    try:
+        stamp = src.stat().st_mtime
+    except OSError:
+        return
+    told = False
+    while proc.poll() is None:
+        time.sleep(3)
+        try:
+            now = src.stat().st_mtime
+        except OSError:
+            continue
+        if now != stamp and not told:
+            told = True
+            with STATE_LOCK:
+                if CHILD is not proc:
+                    return
+            handle_event("# motion server code changed on disk — POWER off, "
+                         "then on, to run the new version")
+
+
 def read_child(proc):
     """Reader thread: pump the child's stdout until EOF."""
     for raw in proc.stdout:
@@ -259,6 +323,9 @@ def child_exited(proc):
             return                       # stale reader from an older child
         CHILD = None
     BYE_EVT.set()
+    # the body died: whatever was playing will never send its PLAY_DONE, and a
+    # voice move waiting on it would burn its whole timeout as dead air
+    voicelink.on_motion_exit()
     # 'starting': power_on's own failure branch owns that transition
     if STATE["power"] not in ("off", "error", "starting"):
         set_phase("off", playing=None, recording=None)
@@ -301,6 +368,7 @@ def power_on():
         with STATE_LOCK:
             CHILD = proc
         threading.Thread(target=read_child, args=(proc,), daemon=True).start()
+        threading.Thread(target=watch_code, args=(proc,), daemon=True).start()
         t0 = time.time()
         while time.time() - t0 < READY_TIMEOUT:
             if READY_EVT.wait(0.5):
@@ -361,6 +429,11 @@ def send_line(line):
             proc.stdin.flush()
         except Exception as e:
             raise BridgeError(500, f"motion server unreachable: {e}")
+
+
+# ------------------------------------------------------------------ voice link
+voicelink.wire(broadcast=broadcast, send_motion=send_line,
+               power=lambda: STATE["power"], python=venv_python, root=ROOT)
 
 
 # ----------------------------------------------------------- offline bus scan
@@ -455,6 +528,7 @@ async def lifespan(_app):
     global LOOP
     LOOP = asyncio.get_running_loop()
     yield
+    await asyncio.to_thread(voicelink.stop)   # he may still be asking for moves
     await asyncio.to_thread(power_off)
 
 
@@ -463,6 +537,11 @@ app = FastAPI(title="POPPY/DECK bridge", lifespan=lifespan)
 
 @app.exception_handler(BridgeError)
 async def _bridge_error(request, exc):
+    return JSONResponse({"error": str(exc)}, status_code=exc.code)
+
+
+@app.exception_handler(voicelink.VoiceError)
+async def _voice_error(request, exc):
     return JSONResponse({"error": str(exc)}, status_code=exc.code)
 
 
@@ -522,7 +601,19 @@ async def api_cmd(request: Request):
 async def api_play(request: Request):
     name = checked_name(await read_body(request))
     require_ready()
-    send_line(f"play {name}")
+    # STATE["power"] only flips to 'playing' when PLAY_START comes BACK, so
+    # require_ready() alone let a voice move slip into the same window and
+    # queue a second 'play'. voicelink arbitrates the motion bus for both of
+    # us; this stays fire-and-forget, the claim is released by the completion
+    # line (or by its own deadline — see PLAY_TIMEOUT in web/voicelink.py).
+    claim = voicelink.claim_motion(name)
+    if claim is None:
+        raise BridgeError(409, "a move is already playing")
+    try:
+        send_line(f"play {name}")
+    except Exception:
+        voicelink.release_motion(claim)   # never sent: the bus is free again
+        raise
     return full_state()
 
 
@@ -572,6 +663,76 @@ async def api_record_abort():
     return full_state()
 
 
+def checked_meta(body):
+    """The move's LLM-facing fields: description + 'when' situation list."""
+    desc = body.get("description", "")
+    if desc is None:
+        desc = ""
+    if not isinstance(desc, str) or len(desc) > 800:
+        raise BridgeError(400, "description must be text, 800 chars max")
+    when = body.get("when") or []
+    if not isinstance(when, list) or len(when) > 20:
+        raise BridgeError(400, "when must be a list of 20 situations at most")
+    rows = []
+    for w in when:
+        if not isinstance(w, str):
+            raise BridgeError(400, "every 'when' entry must be text")
+        w = w.strip()
+        if w:
+            rows.append(w[:300])
+    return desc.strip(), rows
+
+
+@app.post("/api/moves/rename")
+async def api_moves_rename(request: Request):
+    """Christen a take: rename it and write its description / 'when' list.
+
+    Also used to edit those fields on an existing move (from == to).
+    """
+    body = await read_body(request)
+    src, dst = body.get("from"), body.get("to")
+    for n in (src, dst):
+        if not isinstance(n, str) or not NAME_RE.match(n):
+            raise BridgeError(400, "names must be 1-32 chars of a-z 0-9 _ -")
+    desc, when = checked_meta(body)
+    src_path = RECORDED / f"{src}.json"
+    dst_path = RECORDED / f"{dst}.json"
+    if not src_path.is_file():
+        raise BridgeError(404, f"no such move '{src}'")
+    if dst != src and dst_path.exists():
+        raise BridgeError(409, f"a move named '{dst}' already exists")
+    try:
+        doc = json.loads(src_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise BridgeError(500, f"move file unreadable: {e}")
+    doc["name"] = dst
+    doc["description"] = desc
+    doc["when"] = when
+    frames = doc.pop("frames", [])          # keep frames last in the file
+    doc["frames"] = frames
+    dst_path.write_text(json.dumps(doc, indent=1, ensure_ascii=False),
+                        encoding="utf-8")
+    if dst != src:
+        src_path.unlink(missing_ok=True)
+    broadcast({"t": "state", "state": full_state()})
+    return full_state()
+
+
+@app.post("/api/moves/delete")
+async def api_moves_delete(request: Request):
+    """Remove a recorded move (kept in recorded/trash/, never hard-deleted)."""
+    name = checked_name(await read_body(request))
+    path = RECORDED / f"{name}.json"
+    if not path.is_file():
+        raise BridgeError(404, f"no such move '{name}'")
+    trash = RECORDED / "trash"
+    trash.mkdir(exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    path.rename(trash / f"{name}.json.{stamp}")
+    broadcast({"t": "state", "state": full_state()})
+    return full_state()
+
+
 @app.get("/api/moves")
 async def api_moves():
     return list_moves()
@@ -584,6 +745,104 @@ async def api_scan():
     await asyncio.to_thread(do_scan)
     broadcast({"t": "state", "state": full_state()})
     return full_state()
+
+
+# ------------------------------------------------- voice, people, sessions
+# Thin delegations into voicelink; it owns every rule behind them (VOICE.md).
+@app.get("/api/voice")
+async def api_voice():
+    return voicelink.voice_state()
+
+
+@app.post("/api/voice")
+async def api_voice_set(request: Request):
+    body = await read_body(request)
+    return await asyncio.to_thread(voicelink.set_voice, body)
+
+
+@app.post("/api/voice/cmd")
+async def api_voice_cmd(request: Request):
+    return voicelink.command(await read_body(request))
+
+
+@app.post("/api/voice/ptt")
+async def api_voice_ptt(request: Request):
+    return voicelink.ptt(await read_body(request))
+
+
+@app.post("/api/voice/tag")
+async def api_voice_tag(request: Request):
+    return voicelink.tag(await read_body(request))
+
+
+@app.get("/api/voice/chat")
+async def api_voice_chat():
+    return voicelink.chat_rows()
+
+
+@app.get("/api/people")
+async def api_people():
+    return await asyncio.to_thread(voicelink.people_list)
+
+
+@app.post("/api/people/fact")
+async def api_people_fact(request: Request):
+    body = await read_body(request)
+    return await asyncio.to_thread(voicelink.people_fact, body)
+
+
+@app.post("/api/people/fact/delete")
+async def api_people_fact_delete(request: Request):
+    body = await read_body(request)
+    return await asyncio.to_thread(voicelink.people_fact_delete, body)
+
+
+@app.post("/api/people/rename")
+async def api_people_rename(request: Request):
+    body = await read_body(request)
+    return await asyncio.to_thread(voicelink.people_rename, body)
+
+
+@app.post("/api/people/forget")
+async def api_people_forget(request: Request):
+    body = await read_body(request)
+    return await asyncio.to_thread(voicelink.people_forget, body)
+
+
+@app.post("/api/people/enroll/start")
+async def api_enroll_start(request: Request):
+    body = await read_body(request)
+    return await asyncio.to_thread(voicelink.enroll_start, body)
+
+
+@app.post("/api/people/enroll/record")
+async def api_enroll_record():
+    return await asyncio.to_thread(voicelink.enroll_record)
+
+
+@app.post("/api/people/enroll/finish")
+async def api_enroll_finish():
+    return await asyncio.to_thread(voicelink.enroll_finish)
+
+
+@app.post("/api/people/enroll/cancel")
+async def api_enroll_cancel():
+    return voicelink.enroll_cancel()
+
+
+@app.get("/api/audio/devices")
+async def api_audio_devices():
+    return await asyncio.to_thread(voicelink.audio_devices)
+
+
+@app.get("/api/sessions")
+async def api_sessions():
+    return await asyncio.to_thread(voicelink.sessions_list)
+
+
+@app.get("/api/sessions/{file}")
+async def api_session(file: str):
+    return await asyncio.to_thread(voicelink.session_rows, file)
 
 
 @app.websocket("/ws")
@@ -601,6 +860,7 @@ async def ws_endpoint(websocket: WebSocket):
         pass
     finally:
         CLIENTS.discard(websocket)
+        LVL_BUSY.discard(websocket)
 
 
 @app.get("/{path:path}")

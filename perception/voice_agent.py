@@ -83,10 +83,14 @@ def discover_moves():
     moves = {}
     if MOVES_DIR.exists():
         for f in sorted(MOVES_DIR.glob("*.json")):
+            if f.stem.startswith("_"):
+                continue          # unnamed take, still being christened
             try:
-                d = json.loads(f.read_text())
+                d = json.loads(f.read_text(encoding="utf-8"))
                 moves[f.stem] = {"seconds": float(d["frames"][-1]["t"]),
-                                 "frames": len(d["frames"])}
+                                 "frames": len(d["frames"]),
+                                 "description": d.get("description", ""),
+                                 "when": d.get("when") or []}
             except Exception as e:
                 print(f"  ! unreadable move {f.name}: {e}", flush=True)
     return moves

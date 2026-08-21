@@ -4,6 +4,10 @@ Single source of truth for the seams between the four build tracks. If a
 builder needs something not written here, it picks the most conservative
 reading — it does NOT invent new endpoints/fields.
 
+**Poppy Live** — launching the realtime voice agent from the deck, the people /
+voiceprint surface and the hologram's voice aura — has its own contract in
+`web/VOICE.md`, which extends this one.
+
 ## Topology
 ```
 browser (web/ui, Vite+React+TS, three.js)
@@ -61,11 +65,28 @@ JSON in/out. Errors: `{"error":"<human sentence>"}` with 4xx/5xx.
   unbuffered), wait until READY line (timeout 120s → error state, kill child).
   off: send `quit`, wait ≤8s for BYE, then terminate. Idempotent.
 - `POST /api/cmd {"cmd":"hold"|"release"|"look"|"stop"}` — writes the line.
-- `POST /api/play {"name":"wave"}` — refuses (409) unless state ready.
+- `POST /api/play {"name":"wave"}` — refuses (409) unless state ready, and
+  again (409, "a move is already playing") when the voice agent's move already
+  owns the motion bus. `STATE["power"]` only reaches `playing` when PLAY_START
+  comes back, so "ready" alone is not proof the body is free — voicelink
+  arbitrates both plays (web/VOICE.md §2).
 - `POST /api/record/start {"loose":{"41":20}}` (409 unless ready)
 - `POST /api/record/stop {"name":"my_move"}` / `POST /api/record/abort`
-- `GET  /api/moves` → `[{"name":"wave","seconds":6.2,"frames":124}, …]`
-  (reads scripts/motion/moves/recorded/*.json; sorted newest first)
+- `GET  /api/moves` → `[{"name":"wave","seconds":6.2,"frames":124,
+  "description":"…","when":["someone walks in", …]}, …]`
+  (reads scripts/motion/moves/recorded/*.json; sorted newest first; files
+  whose name starts with `_` are hidden — `_take.json` is the just-recorded,
+  not-yet-named take)
+- `POST /api/moves/rename {"from":"_take","to":"wave","description":"…",
+  "when":["…"]}` — christens a take (or, with from == to, edits an existing
+  move's fields). Writes description/`when` into the file and fixes its inner
+  `name`. 409 if the target name is taken.
+- `POST /api/moves/delete {"name":"wave"}` — moves the file to
+  `recorded/trash/<name>.json.<stamp>`; never a hard delete.
+  `description` (≤800 chars) and `when` (≤20 situations) are the LLM-facing
+  fields the voice agent reads when choosing a move. All move JSON is read and
+  written as UTF-8 explicitly — the Windows default (cp1252) mangles the
+  em-dashes and accents these fields carry.
 - `POST /api/scan` — ONLY when power off (else 409). Opens DxlIO briefly,
   per-ID ping with 2 retries over EXPECTED ids (00_read_only's map), reads
   temp+volt+pos of responders, closes port. Returns updated FullState.

@@ -7,10 +7,13 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { CAL } from './calibration';
 import { buildRobot } from './robot';
+import { createAura } from './aura';
+import type { HoloVoice, VoiceAura } from './aura';
 import { makeSharedMats, disposeSharedMats, PALETTE } from './materials';
 import { clamp, clamp01, easeInOutCubic, easeOutQuart, lerp, smoothDampTo } from './easing';
 
 export { CAL } from './calibration';
+export type { HoloVoice, VoicePhase } from './aura';
 
 export type HoloMode = 'dormant' | 'awakening' | 'live';
 export interface HoloMotor { id: number; ok: boolean; present: boolean;
@@ -23,14 +26,16 @@ export interface Holo {
   setZero(raw: Record<string, number> | null): void;
   /** Smoothly return the user's wheel-orbit to front-facing. */
   resetYaw(): void;
-  /** Toggle the overhead camera (true = top view, false = normal view). */
-  setTopView(on: boolean): void;
+  /** Camera viewpoint: front (default), overhead, or the robot's right side. */
+  setView(v: 'front' | 'top' | 'side'): void;
   /** Debug: a node's world position and world direction of its local +Y. */
   probe(nodeName: string): { pos: number[]; yDir: number[] } | null;
   setPickable(on: boolean): void;  // teach mode: markers clickable
   onMotorPick(cb: (id: number) => void): void;
   onMotorHover(cb: (id: number | null) => void): void;
   setHighlight(id: number | null): void;        // register-row hover -> marker ring
+  /** Voice aura: null (or phase 'off') removes it from the scene entirely. */
+  setVoice(v: HoloVoice | null): void;
   onAwakened(cb: () => void): void;
   resize(): void;
   dispose(): void;
@@ -62,13 +67,15 @@ export function createHolo(canvas: HTMLCanvasElement): Holo {
   scene.background = null;
 
   const camera = new THREE.PerspectiveCamera(33, 1, 0.1, 10);
-  const CAM_FRONT = new THREE.Vector3(0, 0.55, 2.35);
-  const CAM_TOP = new THREE.Vector3(0, 2.45, 0.3);
-  const CAM_LOOK = new THREE.Vector3(0, 0.5, 0);
-  camera.position.copy(CAM_FRONT);
+  const CAMS = {
+    front: new THREE.Vector3(0, 0.5, 2.35),
+    top: new THREE.Vector3(0, 2.45, 0.3),
+    side: new THREE.Vector3(-2.35, 0.5, 0.15),   // the robot's right side
+  } as const;
+  const CAM_LOOK = new THREE.Vector3(0, 0.4, 0);
+  camera.position.copy(CAMS.front);
   camera.lookAt(CAM_LOOK);
-  let topView = false;
-  let viewBlend = 0;             // 0 = front camera, 1 = overhead
+  let view: keyof typeof CAMS = 'front';
 
   const mats = makeSharedMats();
   const robot = buildRobot(mats);
@@ -117,6 +124,8 @@ export function createHolo(canvas: HTMLCanvasElement): Holo {
   let hoverId: number | null = null;
   let pointerIn = false;
   let disposed = false;
+  let aura: VoiceAura | null = null;   // built on the first voice frame, freed on 'off'
+  let dpr = 1;
 
   const joints = new Map<number, JointState>();
   for (const idStr of Object.keys(CAL)) {
@@ -263,11 +272,8 @@ export function createHolo(canvas: HTMLCanvasElement): Holo {
     }
     spinGroup.rotation.y = phase === 'live' ? userYaw : spin;
 
-    // overhead camera blend
-    const vTarget = topView ? 1 : 0;
-    viewBlend += (vTarget - viewBlend) * Math.min(1, dt * 6);
-    const e = easeInOutCubic(clamp01(viewBlend));
-    camera.position.lerpVectors(CAM_FRONT, CAM_TOP, e);
+    // camera glides toward the selected viewpoint
+    camera.position.lerp(CAMS[view], Math.min(1, dt * 6));
     camera.lookAt(CAM_LOOK);
   }
 
@@ -304,7 +310,8 @@ export function createHolo(canvas: HTMLCanvasElement): Holo {
     mats.edge.opacity = lerp(0.30, 0.45, glow);
     mats.rim.opacity = lerp(0.010, 0.020, glow);
     mats.accent.opacity = lerp(0.25, 0.5, glow);
-    bloom.strength = lerp(0.35, 0.42, glow);
+    // the screen itself brightens when he talks — that is the "shining"
+    bloom.strength = lerp(0.35, 0.42, glow) + (aura ? 0.12 * aura.energy : 0);
     gridMat.opacity = 0.3 * glow;
     grid.visible = glow > 0.01;
   }
@@ -327,6 +334,14 @@ export function createHolo(canvas: HTMLCanvasElement): Holo {
     lastTickAt = performance.now();
     updatePhase(dt);
     updateJoints(dt);
+    if (aura) {
+      aura.update(dt, time, camera);      // before updateLook: it feeds the bloom
+      if (aura.closed) {                  // faded out after the session ended
+        rig.remove(aura.group);
+        aura.dispose();
+        aura = null;
+      }
+    }
     updateLook();
     updateMarkers(dt);
     composer.render();
@@ -346,7 +361,8 @@ export function createHolo(canvas: HTMLCanvasElement): Holo {
   function resize(): void {
     const w = canvas.clientWidth || 1;
     const h = canvas.clientHeight || 1;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    if (aura) aura.setPixelRatio(dpr);
     renderer.setPixelRatio(dpr);
     renderer.setSize(w, h, false);
     composer.setPixelRatio(dpr);
@@ -413,8 +429,8 @@ export function createHolo(canvas: HTMLCanvasElement): Holo {
     resetYaw(): void {
       yawResetting = true;
     },
-    setTopView(on: boolean): void {
-      topView = on;
+    setView(v: 'front' | 'top' | 'side'): void {
+      view = v;
     },
     probe(nodeName: string): { pos: number[]; yDir: number[] } | null {
       const node = robot.nodes[nodeName];
@@ -435,6 +451,20 @@ export function createHolo(canvas: HTMLCanvasElement): Holo {
     onMotorPick(cb: (id: number) => void): void { pickCbs.push(cb); },
     onMotorHover(cb: (id: number | null) => void): void { hoverCbs.push(cb); },
     setHighlight(id: number | null): void { highlightId = id; },
+    setVoice(v: HoloVoice | null): void {
+      // No session, no aura: it hangs on `rig` (not `spinGroup`) because it is
+      // his voice, not his body — it must not turntable-spin while dormant.
+      if (v === null || v.phase === 'off') {
+        if (aura) aura.close();      // fades out, then step() reaps it
+        return;
+      }
+      if (!aura) {
+        aura = createAura();
+        aura.setPixelRatio(dpr);
+        rig.add(aura.group);
+      }
+      aura.setVoice(v);
+    },
     onAwakened(cb: () => void): void { awakenedCbs.push(cb); },
     resize,
     dispose(): void {
@@ -448,6 +478,11 @@ export function createHolo(canvas: HTMLCanvasElement): Holo {
       canvas.removeEventListener('pointerdown', onPointerDown);
       canvas.removeEventListener('wheel', onWheel);
       canvas.style.cursor = '';
+      if (aura) {
+        rig.remove(aura.group);
+        aura.dispose();
+        aura = null;
+      }
       robot.dispose();
       grid.geometry.dispose();
       gridMat.dispose();

@@ -1,16 +1,23 @@
 import { create } from 'zustand'
 import type {
+  ChatRow,
   EventLine,
   FullState,
   HealthMotors,
   Motor,
   Move,
+  Person,
   Power,
   RecordingInfo,
+  VoiceState,
 } from './types'
 import { EXPECTED_IDS, MOTOR_NAMES } from './types'
 
 export type HoverSource = 'row' | 'holo'
+export type SideTab = 'seq' | 'voice' | 'people'
+
+/** VOICE.md §2.2 — the bridge keeps this many rows, so we keep the same. */
+const CHAT_MAX = 80
 
 export interface DeckState {
   // ---- mirror of FullState ----
@@ -37,12 +44,22 @@ export interface DeckState {
   hoverSource: HoverSource | null
   /** teach flow entered (picking until power hits 'recording') */
   teachActive: boolean
-  /** picked motor id -> stiffness pct (0–60) */
+  /** picked motor id -> teach feel pct (0 = free, 20 loose, 100 rigid) */
   picked: Record<number, number>
   /** local ms timestamp when we saw power enter 'recording' */
   recStartedAt: number | null
   /** true from power-on press until holo finishes its awakening choreography */
   awaitingAwaken: boolean
+  /** move whose description / 'when' list is open for editing */
+  editingMove: string | null
+  /** which panel the side column is showing above TEACH / EVENT LOG */
+  sideTab: SideTab
+
+  // ---- voice (web/VOICE.md) ----
+  voice: VoiceState | null
+  /** the conversation, oldest first — newest is the last row */
+  chat: ChatRow[]
+  people: Person[]
 
   // ---- actions ----
   applyState(s: FullState): void
@@ -56,6 +73,12 @@ export interface DeckState {
   togglePick(id: number): void
   stepPct(id: number, delta: number): void
   clearAwaken(): void
+  setEditingMove(name: string | null): void
+  setSideTab(tab: SideTab): void
+  setVoice(v: VoiceState | null): void
+  setChat(rows: ChatRow[]): void
+  pushChat(row: ChatRow): void
+  setPeople(p: Person[]): void
 }
 
 function initialMotors(): Motor[] {
@@ -93,6 +116,12 @@ export const useStore = create<DeckState>()((set, get) => ({
   picked: {},
   recStartedAt: null,
   awaitingAwaken: false,
+  editingMove: null,
+  sideTab: 'seq',
+
+  voice: null,
+  chat: [],
+  people: [],
 
   applyState(s) {
     const prev = get()
@@ -106,6 +135,9 @@ export const useStore = create<DeckState>()((set, get) => ({
       motors: s.motors,
       seenState: true,
     }
+    // The voice link is independent of the body: it rides along in FullState
+    // only so a reload restores it in one round trip.
+    if (s.voice) patch.voice = s.voice
     if (s.power === 'recording' && prev.power !== 'recording') {
       // Only trust a locally observed transition; on reload fall back to
       // the server's recording.started timestamp.
@@ -125,6 +157,7 @@ export const useStore = create<DeckState>()((set, get) => ({
       patch.picked = {}
       patch.recStartedAt = null
       patch.awaitingAwaken = false
+      patch.editingMove = null
       patch.latestPos = {}
       patch.health = { maxtemp: null, motors: {} }
     }
@@ -174,11 +207,40 @@ export const useStore = create<DeckState>()((set, get) => ({
   stepPct(id, delta) {
     const { picked } = get()
     if (!(id in picked)) return
-    const v = Math.max(0, Math.min(60, picked[id] + delta))
+    const v = Math.max(0, Math.min(100, picked[id] + delta))
     set({ picked: { ...picked, [id]: v } })
   },
 
   clearAwaken() {
     set({ awaitingAwaken: false })
+  },
+
+  setEditingMove(name) {
+    set({ editingMove: name })
+  },
+
+  setSideTab(tab) {
+    set({ sideTab: tab })
+  },
+
+  setVoice(v) {
+    set({ voice: v })
+  },
+
+  setChat(rows) {
+    set({ chat: rows.slice(-CHAT_MAX) })
+  },
+
+  pushChat(row) {
+    const chat = get().chat
+    const last = chat[chat.length - 1]
+    // The bridge renumbers from 1 when a session starts; a row that goes
+    // backwards means what is on screen belongs to a conversation that is over.
+    const base = last && row.n <= last.n ? [] : chat
+    set({ chat: [...base, row].slice(-CHAT_MAX) })
+  },
+
+  setPeople(p) {
+    set({ people: p })
   },
 }))

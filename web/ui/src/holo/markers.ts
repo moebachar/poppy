@@ -22,12 +22,10 @@ export class MotorMarker {
   readonly hitProxy: THREE.Mesh;
   state: MarkerVisualState;
 
-  private core: THREE.Mesh;
-  private coreMat: THREE.MeshBasicMaterial;
+  private coreMat: THREE.SpriteMaterial;
   private glowMat: THREE.SpriteMaterial;
   private hoverMat: THREE.SpriteMaterial;
   private pickMat: THREE.SpriteMaterial;
-  private coreGeom: THREE.OctahedronGeometry;
   private proxyGeom: THREE.SphereGeometry;
   private proxyMat: THREE.MeshBasicMaterial;
   private flickerLeft: number;
@@ -47,17 +45,20 @@ export class MotorMarker {
 
     this.group = new THREE.Group();
 
-    this.coreGeom = new THREE.OctahedronGeometry(0.017);
-    this.coreMat = new THREE.MeshBasicMaterial({
+    // soft gradient ball: a bright core sprite inside the wider halo
+    this.coreMat = new THREE.SpriteMaterial({
+      map: glowTex,
       color: COL_OK,
       transparent: true,
       opacity: 0.95,
       depthTest: false,
       depthWrite: false,
+      blending: THREE.AdditiveBlending,
     });
-    this.core = new THREE.Mesh(this.coreGeom, this.coreMat);
-    this.core.renderOrder = 20;
-    this.group.add(this.core);
+    const core = new THREE.Sprite(this.coreMat);
+    core.scale.setScalar(0.042);
+    core.renderOrder = 20;
+    this.group.add(core);
 
     this.glowMat = new THREE.SpriteMaterial({
       map: glowTex,
@@ -132,7 +133,6 @@ export class MotorMarker {
 
     this.coreMat.opacity = 0.95 * intensity * globalDim;
     this.glowMat.opacity = 0.5 * intensity * globalDim;
-    this.core.rotation.y += dt * 0.8;
 
     const ease = 1 - Math.exp(-dt * 14);
     this.hoverOp = lerp(this.hoverOp, hovered ? 0.9 : 0, ease);
@@ -142,7 +142,6 @@ export class MotorMarker {
   }
 
   dispose(): void {
-    this.coreGeom.dispose();
     this.proxyGeom.dispose();
     this.coreMat.dispose();
     this.glowMat.dispose();

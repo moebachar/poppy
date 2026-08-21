@@ -99,8 +99,24 @@ class Embedder:
             self._loading = True
         threading.Thread(target=self._load, daemon=True).start()
 
-    def load_sync(self):
-        self._load()
+    def load_sync(self, timeout=180):
+        """Block until the model is up (or raise).
+
+        Joins an ensure_loading() already in flight instead of starting a
+        second one — the caller sleeps, so the worker gets the GIL to itself
+        and finishes in the ~8 s it takes alone rather than the tens of
+        seconds it takes competing with a running session."""
+        with self._lock:
+            in_flight = self._loading and self.model is None
+        if not in_flight:
+            self._load()
+        else:
+            t0 = time.time()
+            while self.model is None and self.err is None:
+                if time.time() - t0 > timeout:
+                    raise RuntimeError(f"voice model still loading after "
+                                       f"{timeout:.0f}s")
+                time.sleep(0.05)
         if self.err:
             raise RuntimeError(self.err)
 
@@ -110,7 +126,9 @@ class Embedder:
             # Windows: symlinks need admin/dev-mode — download real files
             os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
             import torch  # noqa: F401
+            t_torch = time.time()
             from speechbrain.inference.speaker import EncoderClassifier
+            t_sb = time.time()
             kw = {}
             try:
                 from speechbrain.utils.fetching import LocalStrategy
@@ -123,12 +141,17 @@ class Embedder:
                 savedir=str(MODELS_DIR / "spkrec-ecapa-voxceleb"),
                 run_opts={"device": "cpu"}, **kw)
             model.eval()
+            t_fetch = time.time()
             # warm up (and prove the whole pipeline works, scipy included)
             # BEFORE publishing — .ready and .err must stay exclusive
             self._embed(model, np.zeros(EMB_RATE, np.int16), EMB_RATE)
             self.model = model
-            print(f"  [id] voice model ready ({time.time() - t0:.1f}s)",
-                  flush=True)
+            # per-stage, because this runs on a worker thread while the rest of
+            # the process is busy, and "it is slow" is not a diagnosis
+            print(f"  [id] voice model ready ({time.time() - t0:.1f}s: "
+                  f"torch {t_torch - t0:.1f} + speechbrain {t_sb - t_torch:.1f}"
+                  f" + fetch {t_fetch - t_sb:.1f}"
+                  f" + warmup {time.time() - t_fetch:.1f})", flush=True)
         except Exception as e:
             self.err = (f"{type(e).__name__}: {e}")
             print(f"  [id] voice model unavailable — {self.err}", flush=True)
@@ -223,12 +246,57 @@ class People:
             cent = (cent / n).astype(np.float32) if n > 0 else None
         self._cents[slug] = cent
 
+    def _reload(self, slug):
+        """Re-read one person from disk, just before we rewrite them.
+
+        The live agent holds a People() for a whole conversation while the
+        deck edits the same files; saving from that session-old snapshot
+        silently threw away a fact somebody added minutes ago. Last writer
+        wins on FRESH data instead. -> the dict, or None if they are gone."""
+        f = PEOPLE_DIR / (slug + ".json")
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            d = None                       # deleted or renamed from the deck
+        except Exception as e:             # corrupt: our copy is the better
+            print(f"  [id] unreadable person file {f.name}: {e}", flush=True)
+            return self.people.get(slug)   # of the two, and saving repairs it
+        if not isinstance(d, dict) or not d.get("name"):
+            self.people.pop(slug, None)    # gone means gone: never resurrect
+            self._cents.pop(slug, None)    # someone the deck just forgot
+            return None
+        self.people[slug] = d
+        self._remat(slug)
+        return d
+
     def _save(self, slug):
+        """Publish atomically — and never through a temp path another writer
+        could be using. One fixed <slug>.json.tmp let the deck and the agent
+        truncate each other's half-written file and both publish it; the
+        reader then dropped the person entirely. os.replace gives atomic
+        publication, not mutual exclusion, so the name must be ours alone."""
         p = self.people[slug]
-        tmp = PEOPLE_DIR / (slug + ".json.tmp")
-        tmp.write_text(json.dumps(p, ensure_ascii=False, indent=1),
-                       encoding="utf-8")
-        os.replace(tmp, PEOPLE_DIR / (slug + ".json"))
+        tmp = PEOPLE_DIR / (f"{slug}.json.{os.getpid()}-"
+                            f"{threading.get_ident()}.tmp")
+        try:
+            tmp.write_text(json.dumps(p, ensure_ascii=False, indent=1),
+                           encoding="utf-8")
+            # a short write (full disk) must never become the person file
+            json.loads(tmp.read_text(encoding="utf-8"))
+            for i in range(4):
+                try:
+                    os.replace(tmp, PEOPLE_DIR / (slug + ".json"))
+                    break
+                except PermissionError:
+                    # Windows refuses to replace a file somebody merely has
+                    # OPEN, and the deck reads the roster on every request.
+                    # That lasts microseconds; a lost fact lasts forever.
+                    if i == 3:
+                        raise
+                    time.sleep(0.02 * (i + 1))
+        except Exception:
+            tmp.unlink(missing_ok=True)    # no stray temp file left behind
+            raise
 
     def names(self):
         return [d["name"] for d in self.people.values()]
@@ -278,6 +346,8 @@ class People:
                 i += 1
             name = f"{base} {i}"
         slug = _slug(name)
+        self._reload(slug)                 # whatever the deck did since this
+                                           # session started, keep it
         d = self.people.setdefault(slug, {
             "name": name.strip(), "created": datetime.now().isoformat(" ", "seconds"),
             "voiceprints": [], "adaptive_prints": [], "facts": [],
@@ -300,15 +370,17 @@ class People:
         return slug
 
     def saw(self, name):
-        d = self.get(name)
-        if d:
+        slug = _slug(name)
+        d = self._reload(slug)             # never stamp last_seen onto a
+        if d:                              # snapshot the deck has since edited
             d["last_seen"] = datetime.now().isoformat(" ", "seconds")
             d["encounters"] = d.get("encounters", 0) + 1
-            self._save(_slug(name))
+            self._save(slug)
 
     def remember(self, name, fact, create=False):
-        d = self.get(name)
-        if d is None:
+        slug = _slug(name)
+        d = self._reload(slug)             # a fact added from the deck must
+        if d is None:                      # survive the fact we add here
             if (not create or not str(name).strip()
                     or str(name).strip().lower() in RESERVED):
                 return False               # labels are not people
@@ -321,7 +393,7 @@ class People:
             d["facts"].append({"t": datetime.now().strftime("%Y-%m-%d"),
                                "text": fact})
             d["facts"] = d["facts"][-MAX_FACTS:]
-            self._save(_slug(name))
+            self._save(slug)
         return True
 
     def forget(self, name):

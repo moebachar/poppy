@@ -38,7 +38,7 @@ function Row({ motor }: { motor: Motor }) {
         </span>
         <span className="mrow-name">{motorLabel(motor.name)}</span>
         {dead ? (
-          <span className="mrow-faulttag">FAULT</span>
+          <span className="mrow-faulttag">ERROR</span>
         ) : (
           <span className="mrow-pos">
             {pos === null ? '—' : pos.toFixed(1)}

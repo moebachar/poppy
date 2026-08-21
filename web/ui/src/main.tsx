@@ -5,6 +5,7 @@ import '@fontsource/space-grotesk/500.css'
 import './styles/tokens.css'
 import './styles/base.css'
 import './styles/panels.css'
+import './styles/voice.css'
 import App from './App'
 import { connectWS } from './api'
 

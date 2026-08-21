@@ -19,6 +19,11 @@ perception/models/
 # ad-hoc file backups (git history is the real backup)
 *.bak-*
 
+# per-machine deck state: audio device indexes, duplex mode, chosen voice
+web/voice_prefs.json
+# deleted moves, kept only so a mis-click is recoverable on THIS machine
+scripts/motion/moves/recorded/trash/
+
 # OS noise
 Thumbs.db
 desktop.ini

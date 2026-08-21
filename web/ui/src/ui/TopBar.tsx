@@ -40,8 +40,7 @@ export default function TopBar() {
   return (
     <header className="topbar">
       <div className="topbar-id">
-        <span className="wordmark">POPPY/DECK</span>
-        <span className="topbar-sub">TORSO·2013</span>
+        <span className="wordmark">POPPY</span>
         <span className={`stateword s-${word}`}>{wordText}</span>
       </div>
       <div className="topbar-readouts">

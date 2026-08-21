@@ -336,6 +336,87 @@
   display: block;
 }
 
+.voice-line {
+  margin: 2px 0 6px;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--ink-dim);
+}
+
+.voice-line.live {
+  color: var(--accent);
+}
+
+.key.voice.on {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.metafield {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.meta-input {
+  width: 100%;
+  padding: 6px 8px;
+  font: 400 11px/1.55 var(--mono, 'IBM Plex Mono', monospace);
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  outline: none;
+  resize: vertical;
+}
+
+.meta-input:focus {
+  border-color: var(--accent);
+}
+
+.meta-input::placeholder {
+  color: var(--ink-dim);
+  opacity: 0.7;
+}
+
+.seq-del {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  line-height: 16px;
+  padding: 0;
+  font: 500 13px/16px var(--mono, 'IBM Plex Mono', monospace);
+  color: var(--ink-dim);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.seqrow:hover .seq-del {
+  opacity: 1;
+}
+
+.seq-del:hover {
+  color: var(--fault);
+}
+
+.seq-confirm input {
+  width: 92px;
+  padding: 2px 6px;
+  font: 400 11px/1.4 var(--mono, 'IBM Plex Mono', monospace);
+  letter-spacing: 0.06em;
+  color: var(--fault);
+  background: transparent;
+  border: 1px solid var(--fault);
+  outline: none;
+}
+
+.seq-confirm input::placeholder {
+  color: var(--ink-dim);
+}
+
 .stage-tools {
   position: absolute;
   right: 14px;
@@ -675,11 +756,40 @@
 
 .deck .key {
   height: 44px;
-  min-width: 104px;
+  /* Six keys now that VOICE sits next to POWER — still wider than RELEASE.
+     A basis, never min-width: min-width blocks flex-shrink, and 706px of keys
+     do not fit the cell (0.5W - 1) until ~1414px, so STOP ended up behind the
+     stage. Below that the labels give way instead. */
+  flex: 0 1 96px;
+  min-width: 0;
+  overflow: hidden;
 }
 
+/* POWER is 148px of room around a five-letter word — it is sized for the
+   SPINNING UP… state word. Spend that slack before any label gives way, and
+   never spend past the label itself. */
 .deck .key.power {
-  min-width: 148px;
+  flex-basis: 148px;
+  flex-shrink: 8;
+  min-width: max-content;
+}
+
+/* STOP is half the safety story (DESIGN.md): its label never gives way. */
+.deck .key.stop {
+  min-width: max-content;
+}
+
+/* SPINNING UP… and LINKING… are wider than their key: while they show, the key
+   sizes to its content exactly as it did before, and shrinks with the rest. */
+.deck .key.transient {
+  flex-basis: auto;
+}
+
+.deck .keylabel {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* ---- event log (bottom right) -------------------------------------------- */

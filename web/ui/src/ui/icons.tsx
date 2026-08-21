@@ -1,5 +1,6 @@
-// The five hand-drawn glyphs allowed by DESIGN.md — power arc, play
-// triangle, stop square, record dot, camera. currentColor everywhere.
+// The hand-drawn glyphs allowed by DESIGN.md — power arc, play triangle,
+// stop square, record dot, camera, plus the level bars VOICE.md §4.2 adds
+// for the voice key. currentColor everywhere.
 
 interface IconProps {
   size?: number
@@ -50,6 +51,17 @@ export function IconRec({ size }: IconProps) {
   return (
     <svg {...frame(size)}>
       <path d="M6 2.5 A3.5 3.5 0 1 0 6.01 2.5 Z" fill="currentColor" />
+    </svg>
+  )
+}
+
+/** Three level bars — the voice key. */
+export function IconLevel({ size }: IconProps) {
+  return (
+    <svg {...frame(size)}>
+      <path d="M2.5 6.6 L2.5 9.7" stroke="currentColor" strokeWidth="1.4" fill="none" />
+      <path d="M6 2.3 L6 9.7" stroke="currentColor" strokeWidth="1.4" fill="none" />
+      <path d="M9.5 4.8 L9.5 9.7" stroke="currentColor" strokeWidth="1.4" fill="none" />
     </svg>
   )
 }

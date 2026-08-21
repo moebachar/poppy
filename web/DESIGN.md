@@ -152,6 +152,14 @@ against the real robot.
 - If the WS drops: top-bar LINK dot goes --fault, stage keeps last pose,
   a thin --fault rule appears under the top bar until reconnect.
 
+## Poppy Live (voice mode)
+The side column is tabbed — `SEQUENCES` · `VOICE` · `PEOPLE` — with TEACH and
+EVENT LOG pinned below, and the command deck carries a sixth key, `VOICE`.
+The hologram gains a voice-driven aura. All of it is specified in
+`web/VOICE.md` §3–4; the rules on this page still govern every pixel of it,
+with the single standing exception that the hologram is the one luminous
+thing on screen and the aura lives inside it.
+
 ## Files this spec governs
-`web/ui/src/styles/tokens.css`, `base.css`, `panels.css`; all components in
-`web/ui/src/ui/`; the hologram module in `web/ui/src/holo/`.
+`web/ui/src/styles/tokens.css`, `base.css`, `panels.css`, `voice.css`; all
+components in `web/ui/src/ui/`; the hologram module in `web/ui/src/holo/`.

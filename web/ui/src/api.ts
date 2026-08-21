@@ -1,6 +1,18 @@
 // REST helpers + reconnecting WebSocket client. Feeds the zustand store.
+import { pushLevels } from './audioBus'
 import { useStore } from './state'
-import type { FullState, HealthMotors, Move } from './types'
+import type {
+  AudioDevices,
+  ChatRow,
+  FullState,
+  HealthMotors,
+  Move,
+  PeopleReply,
+  SessionInfo,
+  SessionRow,
+  VoicePrefs,
+  VoiceState,
+} from './types'
 
 function nowTs(): string {
   const d = new Date()
@@ -75,8 +87,112 @@ export function apiMoves(): Promise<Move[]> {
   return req<Move[]>('/api/moves')
 }
 
+export function apiDeleteMove(name: string): Promise<FullState> {
+  return post<FullState>('/api/moves/delete', { name })
+}
+
+export function apiRenameMove(
+  from: string,
+  to: string,
+  meta?: { description?: string; when?: string[] },
+): Promise<FullState> {
+  return post<FullState>('/api/moves/rename', {
+    from,
+    to,
+    description: meta?.description ?? '',
+    when: meta?.when ?? [],
+  })
+}
+
 export function apiScan(): Promise<FullState> {
   return post<FullState>('/api/scan')
+}
+
+// ---- REST: voice (VOICE.md §2.3) -----------------------------------------
+
+export function apiVoice(): Promise<VoiceState> {
+  return req<VoiceState>('/api/voice')
+}
+
+// Start / stop the session, write preferences, or both in one call. The new
+// state comes back over the socket, so nothing here reads the response body.
+export function apiVoiceSet(body: VoicePrefs & { on?: boolean }): Promise<unknown> {
+  return post('/api/voice', body)
+}
+
+export function apiVoiceCmd(cmd: 'interrupt' | 'nudge'): Promise<unknown> {
+  return post('/api/voice/cmd', { cmd })
+}
+
+export function apiVoicePtt(down: boolean): Promise<unknown> {
+  return post('/api/voice/ptt', { down })
+}
+
+export function apiVoiceTag(name: string): Promise<unknown> {
+  return post('/api/voice/tag', { name })
+}
+
+export function apiVoiceChat(): Promise<{ rows: ChatRow[] }> {
+  return req<{ rows: ChatRow[] }>('/api/voice/chat')
+}
+
+// ---- REST: people (VOICE.md §2.4, §2.5) ----------------------------------
+
+export function apiPeople(): Promise<PeopleReply> {
+  return req<PeopleReply>('/api/people')
+}
+
+export function apiAddFact(name: string, fact: string): Promise<unknown> {
+  return post('/api/people/fact', { name, fact })
+}
+
+export function apiDeleteFact(name: string, index: number): Promise<unknown> {
+  return post('/api/people/fact/delete', { name, index })
+}
+
+export function apiRenamePerson(from: string, to: string): Promise<unknown> {
+  return post('/api/people/rename', { from, to })
+}
+
+export function apiForgetPerson(name: string): Promise<unknown> {
+  return post('/api/people/forget', { name })
+}
+
+export function apiEnrollStart(name: string): Promise<VoiceState> {
+  return post<VoiceState>('/api/people/enroll/start', { name })
+}
+
+export function apiEnrollRecord(): Promise<VoiceState> {
+  return post<VoiceState>('/api/people/enroll/record')
+}
+
+export function apiEnrollFinish(): Promise<VoiceState> {
+  return post<VoiceState>('/api/people/enroll/finish')
+}
+
+export function apiEnrollCancel(): Promise<VoiceState> {
+  return post<VoiceState>('/api/people/enroll/cancel')
+}
+
+// ---- REST: devices & sessions (VOICE.md §2.6) ----------------------------
+
+export function apiAudioDevices(): Promise<AudioDevices> {
+  return req<AudioDevices>('/api/audio/devices')
+}
+
+export function apiSessions(): Promise<SessionInfo[]> {
+  return req<SessionInfo[]>('/api/sessions')
+}
+
+export function apiSession(file: string): Promise<{ rows: SessionRow[] }> {
+  return req<{ rows: SessionRow[] }>(`/api/sessions/${encodeURIComponent(file)}`)
+}
+
+/** Re-read the roster. The bridge only tells us that it changed. */
+export function refreshPeople(): void {
+  apiPeople()
+    .then((r) => useStore.getState().setPeople(r.people))
+    .catch(() => {}) // already in the event log
 }
 
 // ---- WebSocket -----------------------------------------------------------
@@ -87,6 +203,10 @@ type WsMsg =
   | ({ t: 'health' } & HealthMotors & { holding: boolean })
   | { t: 'state'; state: FullState }
   | { t: 'event'; ts: string; line: string }
+  | { t: 'voice'; voice: VoiceState }
+  | { t: 'lvl'; o: number; i: number; b: number[] }
+  | { t: 'chat'; row: ChatRow }
+  | { t: 'people' }
 
 // One powered-off bus survey per page load, so the register and hologram
 // show real health colors instead of 13 assumed faults.
@@ -96,6 +216,16 @@ function maybeAutoScan(s: FullState): void {
   if (s.motors.some((m) => m.present)) return
   scannedOnce = true
   apiScan().catch(() => {}) // failure already lands in the event log
+}
+
+// The conversation and the roster are not in FullState — pull them on every
+// hello so a reload, and a reconnect that missed rows, both land on a full
+// VOICE tab instead of an empty one.
+function hydrateVoice(): void {
+  apiVoiceChat()
+    .then((r) => useStore.getState().setChat(r.rows))
+    .catch(() => {})
+  refreshPeople()
 }
 
 const BACKOFF_MS = [1000, 2000, 5000]
@@ -129,6 +259,7 @@ function open(): void {
       case 'hello':
         store().applyState(msg.state)
         maybeAutoScan(msg.state)
+        hydrateVoice()
         break
       case 'state':
         store().applyState(msg.state)
@@ -141,6 +272,19 @@ function open(): void {
         break
       case 'event':
         store().pushEvent(msg.ts, msg.line)
+        break
+      case 'voice':
+        store().setVoice(msg.voice)
+        break
+      case 'lvl':
+        // 30 Hz — straight to the bus, never through the store.
+        pushLevels(msg.o, msg.i, msg.b)
+        break
+      case 'chat':
+        store().pushChat(msg.row)
+        break
+      case 'people':
+        refreshPeople()
         break
     }
   }

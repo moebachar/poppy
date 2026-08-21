@@ -14,13 +14,13 @@ export const CAL: Record<
   // every other joint reads mirrored, hence the flips.
   33: { node: 'absZ',       axis: 'y', sign:  1, offset: -161.93 },
   34: { node: 'bustY',      axis: 'x', sign: -1, offset:   89.63 },
-  35: { node: 'bustX',      axis: 'z', sign:  1, offset:   -1.27 },
+  35: { node: 'bustX',      axis: 'z', sign: -1, offset:   -1.27 },  // live-verified
   36: { node: 'headZ',      axis: 'y', sign:  1, offset:   -1.03 },
   37: { node: 'headY',      axis: 'x', sign: -1, offset:  -33.87 },
-  41: { node: 'lShoulderY', axis: 'x', sign: -1, offset: -108.44 },
+  41: { node: 'lShoulderY', axis: 'x', sign:  1, offset: -108.44 },  // live-verified
   42: { node: 'lShoulderX', axis: 'z', sign:  1, offset:  178.07 },
   43: { node: 'lArmZ',      axis: 'y', sign:  1, offset:   -6.11 },
-  44: { node: 'lElbowY',    axis: 'x', sign: -1, offset: -161.19 },
+  44: { node: 'lElbowY',    axis: 'x', sign:  1, offset: -161.19 },  // live-verified
   51: { node: 'rShoulderY', axis: 'x', sign: -1, offset:   75.74 },
   52: { node: 'rShoulderX', axis: 'z', sign: -1, offset:   20.70 },
   53: { node: 'rArmZ',      axis: 'y', sign:  1, offset:  -77.14 },

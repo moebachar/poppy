@@ -22,7 +22,7 @@ export interface RobotRig {
 }
 
 const ROOT_SCALE = 1.9;          // URDF meters -> stage units
-const FLOAT_Y = 0.18;            // hologram floats; hands hang below the base
+const FLOAT_Y = 0.0;             // grounded: the base sits on the grid floor
 const MESH_BASE = '/meshes/';    // served from web/ui/public/meshes
 
 type Vec3 = [number, number, number];
@@ -56,6 +56,9 @@ const MARKER_POS: Record<number, Vec3> = {
 // shoulder-X drop. Baked as static rotations between joint origin and rotor
 // so the module's joint values stay zero-at-stand.
 const NEUTRAL: Record<string, { axis: 'x' | 'y' | 'z'; rad: number }> = {
+  // level the gaze: the neck mounts the head 20 deg back; the real stand
+  // holds it looking straight ahead
+  headY: { axis: 'x', rad: 0.33 },
   lShoulderY: { axis: 'x', rad: Math.PI / 2 },
   lShoulderX: { axis: 'z', rad: Math.PI / 2 },
   rShoulderY: { axis: 'x', rad: Math.PI / 2 },
