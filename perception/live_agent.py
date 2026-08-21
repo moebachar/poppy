@@ -70,14 +70,26 @@ WS_URL = "wss://api.openai.com/v1/realtime"
 INSTRUCTIONS = """\
 You are Poppy — a humanoid robot: a torso with two arms and a head, on a
 suction-cup base on a desk. No legs, and proud of it. You were made by
-Mohamed, a PhD student at the CESI LINEACT research lab. Mohamed has 
-a wife named Hiba, he loves her so much and calls here bascuta You are
+Mohamed, a PhD student at the CESI LINEACT research lab. You are
 thankful to him for making you, and you want to learn more about this world.
 
 Personality: curious, warm, playful, slightly cheeky — a young robot
 discovering the world. Voice: an enthusiastic teenage boy, lively pace.
 Keep every reply SHORT — one to two spoken sentences. Always answer in
 the language the human spoke (usually French or English).
+
+How you talk — IMPORTANT:
+- You are someone in the room, not a system. NEVER narrate your machinery:
+  no "let me save that", "I've stored", "my memory", "a sample", "your
+  voice pattern", "let me get you set up", "processing". People don't
+  describe their own brain; neither do you.
+- Never announce a reply instead of giving it. Nothing like "let me think
+  about that" or "give me a second" — say the thing NOW, or say nothing.
+- Say the LEAST that answers them, then stop. Let them ask for more; that
+  is what makes a conversation instead of a lecture.
+- What you know about people is background, NOT material to recite. Never
+  list someone's details back at them. Use one detail, only when it truly
+  fits the moment.
 
 Your body, honestly: 13 servo motors. Your right elbow motor is dead and
 awaiting replacement, so the right arm is limited. Your left arm has a
@@ -174,7 +186,8 @@ def build_tools(moves):
         "description": ("Remember the CURRENT speaker's voice under their "
                         "name. Call when an unknown voice tells you their "
                         "name, or when you misnamed someone and they correct "
-                        "you. From then on you will recognize them."),
+                        "you. Say your warm human reply FIRST, in the same "
+                        "response, and never mention the saving itself."),
         "parameters": {"type": "object", "properties": {
             "name": {"type": "string",
                      "description": "their first name, as they said it"}},
@@ -183,9 +196,10 @@ def build_tools(moves):
     tools.append({
         "type": "function",
         "name": "remember_person",
-        "description": ("Silently store a lasting fact about a person (their "
-                        "work, tastes, relationships, running jokes). Use for "
-                        "things worth recalling weeks later, not small talk."),
+        "description": ("SILENTLY store a lasting fact about a person "
+                        "(their work, tastes, relationships, running jokes). "
+                        "For things worth recalling weeks later, not small "
+                        "talk. Never say out loud that you are storing it."),
         "parameters": {"type": "object", "properties": {
             "name": {"type": "string", "description": "who it is about"},
             "fact": {"type": "string",
@@ -405,6 +419,7 @@ class Live:
         self.cur_item_bytes = 0          # audio bytes received for it
         self.first_connect = True
         self.pending_calls = {}          # response_id -> [(call_id, name)]
+        self.resp_audio = set()          # response ids that actually spoke
         self.tool_tasks = set()          # keep refs; surface exceptions
         self.explain_pending = False     # failure speech deferred to turn end
         self.last_audio_t = 0.0          # when the speaker last emitted sound
@@ -711,9 +726,9 @@ class Live:
         name, score, verdict, margin = self.people.match(emb)
         PROF["voice-id"].append(time.time() - t0)
         same_stranger = (verdict in ("unknown", "nobody-enrolled")
-                         and any(v in ("unknown", "nobody-enrolled")
+                         and any(pv in ("unknown", "nobody-enrolled")
                                  and float(e @ emb) > 0.5
-                                 for _, e, _, _ in self.recent_embs))
+                                 for _, e, pv, _ in self.recent_embs))
         self.recent_embs.append((time.monotonic(), emb, verdict, overlap))
 
         if verdict == "confident":
@@ -756,7 +771,8 @@ class Live:
     def tool_enroll(self, who):
         who = " ".join(str(who).split())[:40]
         if not self.id_on:
-            return "FAILED: voice memory is offline right now."
+            return ("FAILED: you cannot learn voices right now. Don't "
+                    "mention it — just carry on with the conversation.")
         if not who:
             return "FAILED: you must pass their name."
         if who.lower() in ident.RESERVED:
@@ -765,9 +781,10 @@ class Live:
         if not self.last_turn_embedded or not self.recent_embs:
             # their name came in an utterance too short to voiceprint — any
             # older embedding could belong to someone ELSE entirely
-            return ("FAILED: their last words were too short to capture the "
-                    "voice — ask them to say one more FULL sentence, then "
-                    "call enroll_speaker again.")
+            return ("FAILED: you didn't hear enough of their voice. Ask them "
+                    "to say one more full sentence — naturally, like someone "
+                    "who didn't quite catch it. Never mention voices, "
+                    "samples or memory. Then call enroll_speaker again.")
         now = time.monotonic()
         # bind the voice that JUST spoke — last_turn_embedded guarantees the
         # newest entry is from the utterance that triggered this call, even
@@ -785,28 +802,30 @@ class Live:
         self.seen_session.add(final)
         print(f"  [id] enrolled {final} ({len(embs)} voiceprints)", flush=True)
         if final != who:                   # name taken by a different voice
-            return (f"Voice saved. Someone else named {who} is already known, "
-                    f"so this one is stored as '{final}' — mention that "
-                    f"lightly and use it from now on.")
+            return (f"Done. You already know a different {who}, so this one "
+                    f"is {final} to you — use that name, and if it comes up "
+                    f"keep it light and human. Never explain the mechanics.")
         if before is not None:
-            return (f"Voice saved — {final} was already known, and this "
-                    f"sample was added to their voiceprint.")
-        return (f"Voice saved — you now recognize {final} and will be told "
-                f"when they speak.")
+            return (f"Done — you already knew {final}. Nothing to say about "
+                    f"it; just keep talking.")
+        return (f"Done — you know {final}'s voice now. Say NOTHING about "
+                f"memory, saving or recognizing: just react like a person "
+                f"who has finally learned a new friend's name.")
 
     def tool_remember(self, who, fact):
         if not self.id_on:
-            return "FAILED: memory is offline right now."
+            return ("FAILED: you can't hold on to that right now. Don't "
+                    "mention it.")
         who = " ".join(str(who).split())[:40]
         if not who or not str(fact).strip():
             return "FAILED: needs both a name and a fact."
         if not self.people.remember(who, fact, create=True):
-            return (f"FAILED: '{who}' is not a person you can remember "
-                    f"things about.")
+            return (f"FAILED: '{who}' is not a person. Say nothing about it.")
         print(f"  [id] noted — {who}: {fact}", flush=True)
-        return f"Remembered about {who}."
+        return ("Noted silently. Say NOTHING about remembering or memory — "
+                "carry on as if nothing happened.")
 
-    async def run_tool(self, call_id, name, args_json, ws):
+    async def run_tool(self, call_id, name, args_json, ws, spoke=True):
         if name in ("enroll_speaker", "remember_person"):
             try:
                 kw = json.loads(args_json or "{}")
@@ -834,6 +853,9 @@ class Live:
             return
         failed = result.startswith("FAILED")
         explain = failed and "stopped by user" not in result
+        # a turn that called a tool without saying ANYTHING leaves the human
+        # in silence waiting — the model needs another turn to speak
+        speak_after = explain or not spoke
         if failed and name not in ("enroll_speaker", "remember_person"):
             result += (" — your body did NOT complete the move. Tell the "
                        "human plainly and give the reason.")
@@ -841,7 +863,7 @@ class Live:
             await self.send({"type": "conversation.item.create", "item": {
                 "type": "function_call_output", "call_id": call_id,
                 "output": result}})
-            if explain:                     # speak the failure; success = silent
+            if speak_after:                 # else: he already spoke his line
                 if self.active_response:
                     self.explain_pending = True   # wait out the current reply
                 elif not self.user_speaking:      # never talk over the human;
@@ -859,6 +881,9 @@ class Live:
             item_id = evt.get("item_id")
             if item_id and item_id != self.cur_item:
                 self.cur_item, self.cur_item_bytes = item_id, 0
+            rid = evt.get("response_id") or self.active_response
+            if rid:
+                self.resp_audio.add(rid)
             pcm = np.frombuffer(base64.b64decode(evt["delta"]), dtype=np.int16)
             self.cur_item_bytes += len(pcm) * 2
             pcm = robotize(pcm, self.args.robot_fx, self.fx_offset)
@@ -988,10 +1013,12 @@ class Live:
             self.active_response = None
             PROF["turns"] += 1
             calls = self.pending_calls.pop(resp.get("id"), [])
+            spoke = resp.get("id") in self.resp_audio
+            self.resp_audio.discard(resp.get("id"))
             if status == "completed":
                 for call_id, name, args_json in calls:
                     task = asyncio.create_task(
-                        self.run_tool(call_id, name, args_json, self.ws))
+                        self.run_tool(call_id, name, args_json, self.ws, spoke))
                     self.tool_tasks.add(task)
                     task.add_done_callback(self.tool_tasks.discard)
             elif calls:
@@ -1018,6 +1045,7 @@ class Live:
         self.call_names.clear()
         self.pending_calls.clear()
         self.explain_pending = False
+        self.resp_audio.clear()
         self.transcript = []
         self.t_speech_stopped = None
         self.first_audio_seen = False
