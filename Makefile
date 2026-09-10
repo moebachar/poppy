@@ -1,9 +1,14 @@
+root := $(shell pwd)
+
+.PHONY: start first-launch
+
 start:
-	source venv/bin/activate
-	npm run build
-	python3 ./web/server.py
+	bash -c "source $(root)/venv/bin/activate && \
+	cd $(root)/web/ui && \
+	npm run build && \
+	python3 $(root)/web/server.py"
 
 first-launch:
-	python3 -m venv venv
-	npm install web/ui/package.json
-	start
+	python3 -m venv ${root}/venv
+	cd $(root)/web/ui && npm install
+	$(MAKE) start
