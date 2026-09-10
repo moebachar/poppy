@@ -1,0 +1,28 @@
+# Poppy's environment — direct dependencies only, pinned to the versions the
+# 2026 fair build ran on (Python 3.13 venv on Windows 11). Transitive deps
+# (torch via speechbrain, starlette via fastapi, ...) resolve on install.
+#
+#   python -m venv .venv
+#   .venv\Scripts\python.exe -m pip install -r requirements.txt
+
+# the deck (web/server.py, web/admin.py) and the kiosk proxy (web/kiosk.py)
+fastapi==0.141.1
+uvicorn==0.52.3
+httptools==0.8.0            # uvicorn extra: faster http parsing
+watchfiles==1.2.0           # uvicorn extra: --reload during development
+httpx==0.28.1               # kiosk -> deck proxying
+websockets==17.0.1          # realtime voice agent <-> OpenAI
+
+# the body (scripts/motion/, pypot over the USB2AX)
+poppy-torso==3.0.0
+pypot==5.0.2
+pyserial==3.5
+
+# perception (voice, voiceprints, faces)
+sounddevice==0.5.5
+numpy==2.5.1
+speechbrain==1.1.0          # voiceprint embeddings (pulls torch)
+opencv-contrib-python==5.0.0.93
+openai==2.50.0              # the offline voice_agent.py pipeline
+keyboard==0.13.5            # local push-to-talk (voice_agent.py)
+python-dotenv==1.2.3
