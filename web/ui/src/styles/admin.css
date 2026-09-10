@@ -1,0 +1,718 @@
+/* POPPY/DECK — the admin page (web/VOICE.md §5.4). Denser than the deck, same
+   instrument: radius 0, no gradients, no shadows, hairlines do the work. */
+
+/* ---- the ADMIN key in the top bar --------------------------------------- */
+
+.segkey {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--ink-dim);
+  transition: color var(--t-ui) var(--ease-ui);
+  user-select: none;
+}
+
+.segkey:hover {
+  color: var(--ink);
+}
+
+/* ---- the page ------------------------------------------------------------ */
+
+/* Fixed and opaque, painted OVER the deck: the deck below keeps its size, its
+   WebGL context and its awakening state, and comes back untouched on CLOSE.
+
+   The shell is the fixed part and holds NO floor of its own. A fixed box is
+   laid out against the viewport, so anything of it that sticks out is gone for
+   good — no ancestor can scroll it back (body is overflow:hidden, and nothing
+   scrolls a fixed box anyway). The 1100px floor therefore sits on .ad-frame
+   INSIDE this shell, where scrolling it sideways is possible: with devtools
+   docked beside a 1400px window, the page is cramped instead of unleavable. */
+.admin {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: var(--bg);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.ad-frame {
+  min-width: 1100px;
+  height: 100%;
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  grid-template-rows: 44px 1fr;
+  gap: 1px;
+  background: var(--rule);
+}
+
+.ad-frame.warned {
+  grid-template-rows: 44px auto 1fr;
+}
+
+/* No overflow rule here: it would make this row its own scrollport and the
+   sticky CLOSE would have nothing left to stick to. Every child that could
+   grow past the row clips or ellipsizes itself instead. */
+.ad-top {
+  grid-column: 1 / 3;
+  grid-row: 1;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+}
+
+.ad-word {
+  font-family: var(--wordmark);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  user-select: none;
+}
+
+/* VOICE.md §5.3 — said once for the whole page, in the VOICE tab's words. */
+.ad-live {
+  flex: 0 0 auto;
+  white-space: nowrap; /* one line in a 44px row, never two */
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--warn);
+  user-select: none;
+}
+
+/* The override file is being IGNORED: the tree on screen is pure defaults and
+   nothing reads as changed, so the page has to say why or it reads as "you
+   never changed anything". Sits in the header, seen from every section. */
+.ad-fault {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--fault);
+  user-select: none;
+}
+
+.ad-fault .ad-sub {
+  margin-left: 8px;
+  letter-spacing: 0.04em;
+  color: var(--ink-dim);
+}
+
+/* The way out, and it must never be the thing that scrolls off. Sticky against
+   .admin's scrollport: at 1100px and up it is exactly where margin-left:auto
+   puts it; narrower, it holds the window's right edge and paints over the
+   header text it passes — hence the background, which the row already wears. */
+.ad-close {
+  position: sticky;
+  right: 14px;
+  margin-left: auto;
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 14px;
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  color: var(--ink);
+  transition: border-color var(--t-ui) var(--ease-ui);
+}
+
+.ad-close:hover {
+  border-color: var(--rule-hi);
+}
+
+/* ---- the unsaved-edits warning ------------------------------------------ */
+
+.ad-warn {
+  grid-column: 1 / 3;
+  grid-row: 2;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 14px;
+  border-top: 1px solid var(--warn);
+  border-bottom: 1px solid var(--warn);
+}
+
+.ad-warnword {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--warn);
+  user-select: none;
+}
+
+.ad-warn .ad-mini {
+  margin: 0;
+}
+
+/* ---- the section list ---------------------------------------------------- */
+
+.ad-nav {
+  grid-column: 1;
+  grid-row: 2;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.ad-frame.warned .ad-nav,
+.ad-frame.warned .ad-body {
+  grid-row: 3;
+}
+
+.ad-navkey {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 9px;
+  border-bottom: 1px solid var(--rule);
+  border-left: 2px solid transparent;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-align: left;
+  color: var(--ink-dim);
+  transition:
+    color var(--t-ui) var(--ease-ui),
+    border-color var(--t-ui) var(--ease-ui);
+  user-select: none;
+}
+
+.ad-navkey:hover {
+  color: var(--ink);
+}
+
+.ad-navkey.on {
+  color: var(--ink);
+  border-left-color: var(--accent);
+}
+
+.ad-dot {
+  width: 4px;
+  height: 4px;
+  margin-left: auto;
+  background: var(--warn);
+}
+
+/* ---- the section --------------------------------------------------------- */
+
+.ad-body {
+  grid-column: 2;
+  grid-row: 2;
+  position: relative;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ad-section {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ad-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px 8px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.ad-title {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  color: var(--ink-dim);
+  user-select: none;
+}
+
+.ad-tag {
+  padding: 1px 6px;
+  border: 1px solid var(--rule);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--ink-dim);
+  user-select: none;
+}
+
+.ad-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.ad-fields {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.ad-savebar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--rule);
+}
+
+.ad-savebar .key {
+  height: 26px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.ad-bad {
+  font-size: 11px;
+  color: var(--fault);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.ad-good {
+  font-size: 11px;
+  color: var(--ok);
+}
+
+.ad-hint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-dim);
+}
+
+/* small keys: RESET, DISCARD, EDIT, ON/OFF */
+
+.ad-mini {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border: 1px solid var(--rule);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--ink-dim);
+  transition:
+    border-color var(--t-ui) var(--ease-ui),
+    color var(--t-ui) var(--ease-ui);
+  user-select: none;
+}
+
+.ad-mini:hover:not(:disabled) {
+  border-color: var(--rule-hi);
+  color: var(--ink);
+}
+
+.ad-mini:disabled {
+  opacity: 0.35;
+}
+
+.ad-mini.warn:hover:not(:disabled) {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+/* ---- PERSONALITY --------------------------------------------------------- */
+
+.ad-field {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 14px 12px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.ad-field.grow {
+  flex: 1 1 auto;
+  min-height: 160px;
+}
+
+.ad-fhead {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ad-count {
+  margin-left: auto;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--ink-dim);
+  user-select: none;
+}
+
+.ad-count.warn {
+  color: var(--warn);
+}
+
+.ad-count.over {
+  color: var(--fault);
+}
+
+/* refused for a reason other than length — an empty tool description */
+.ad-count.bad {
+  color: var(--fault);
+}
+
+.ad-ta {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  padding: 8px 10px;
+  font: 400 12px/1.6 var(--mono);
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  outline: none;
+  resize: none;
+  tab-size: 4;
+  transition: border-color var(--t-ui) var(--ease-ui);
+}
+
+.ad-ta:focus {
+  border-color: var(--accent);
+}
+
+.ad-ta.over {
+  border-color: var(--fault);
+}
+
+/* ---- TOOLS --------------------------------------------------------------- */
+
+.ad-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 14px 11px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.ad-rowhead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ad-name {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--ink);
+}
+
+.ad-row.off .ad-name {
+  color: var(--ink-dim);
+}
+
+.ad-toggle {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.ad-keys {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.ad-sub {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-dim);
+  overflow-wrap: anywhere;
+}
+
+.ad-loss {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.ad-lossword {
+  flex: 0 0 auto;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--warn);
+  user-select: none;
+}
+
+.ad-desc {
+  width: 100%;
+  padding: 6px 8px;
+  font: 400 11px/1.55 var(--mono);
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  outline: none;
+  resize: vertical;
+  transition: border-color var(--t-ui) var(--ease-ui);
+}
+
+.ad-desc:focus {
+  border-color: var(--accent);
+}
+
+.ad-desc.over,
+.ad-desc.bad {
+  border-color: var(--fault);
+}
+
+/* ---- SPEECH / RECOGNITION ------------------------------------------------ */
+
+.ad-crow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--rule);
+  min-height: 34px;
+}
+
+.ad-clabel {
+  flex: 0 0 104px;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--ink-dim);
+  user-select: none;
+}
+
+.ad-cval {
+  flex: 0 0 auto;
+  min-width: 44px;
+  font-size: 11px;
+  color: var(--ink);
+}
+
+/* the PTT KEY picker refusing a key: Space is STOP, Escape is the browser's */
+.ad-cval.warn {
+  color: var(--warn);
+}
+
+.ad-num {
+  flex: 0 0 auto;
+  width: 76px;
+  padding: 4px 7px;
+  font: 400 12px/1.3 var(--mono);
+  text-align: right;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  outline: none;
+  transition: border-color var(--t-ui) var(--ease-ui);
+}
+
+.ad-num:focus {
+  border-color: var(--accent);
+}
+
+.ad-num.bad {
+  border-color: var(--fault);
+  color: var(--fault);
+}
+
+.ad-def {
+  flex: 0 0 auto;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--ink-dim);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.ad-says {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--ink-dim);
+  overflow-wrap: anywhere;
+}
+
+.ad-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 340px;
+  height: 24px;
+  padding: 0 5px;
+  font: 400 11px/1 var(--mono);
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  color-scheme: dark;
+}
+
+.ad-select:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+/* the FX slider, same drawing as the VOICE tab's */
+.ad-slider {
+  width: 160px;
+  height: 12px;
+  background: transparent;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.ad-slider::-webkit-slider-runnable-track {
+  height: 2px;
+  background: var(--rule);
+}
+
+.ad-slider::-webkit-slider-thumb {
+  width: 6px;
+  height: 12px;
+  margin-top: -5px;
+  background: var(--accent);
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.ad-slider::-moz-range-track {
+  height: 2px;
+  border-radius: 0;
+  background: var(--rule);
+}
+
+.ad-slider::-moz-range-thumb {
+  width: 6px;
+  height: 12px;
+  border: none;
+  border-radius: 0;
+  background: var(--accent);
+}
+
+/* ---- PREVIEW ------------------------------------------------------------- */
+
+.ad-pblock {
+  border-bottom: 1px solid var(--rule);
+  padding: 9px 14px 12px;
+}
+
+.ad-plabel {
+  display: block;
+  padding-bottom: 6px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  color: var(--ink-dim);
+  user-select: none;
+}
+
+.ad-pre {
+  margin: 0;
+  max-height: 420px;
+  overflow: auto;
+  padding: 9px 11px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  font: 400 11px/1.6 var(--mono);
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+/* ---- ACCESS -------------------------------------------------------------- */
+
+.ad-form {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.ad-form .name-input {
+  width: 200px;
+  flex: 0 0 auto;
+  font-size: 12px;
+}
+
+.ad-form .key {
+  height: 26px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.ad-soft {
+  padding: 10px 14px 12px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ink-dim);
+  border-bottom: 1px solid var(--rule);
+}
+
+/* ---- the gate ------------------------------------------------------------ */
+
+/* Painted over the section, which stays mounted underneath: a token that
+   expires mid-edit must not cost the operator what they had typed. */
+.ad-gate {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ad-gatebox {
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px;
+  border: 1px solid var(--rule);
+}
+
+.ad-gatebox .name-input {
+  font-size: 13px;
+  letter-spacing: 0.14em;
+}
+
+.ad-gatebox .key {
+  height: 30px;
+}
+
+/* the refusal is a sentence here, not a strip in a save bar */
+.ad-gatebox .ad-bad {
+  white-space: normal;
+  line-height: 1.5;
+}
+
+/* ---- the moved panels ---------------------------------------------------- */
+
+/* PeoplePanel and the session browser come over whole; they only need to be
+   told to fill this column instead of the side one. */
+.ad-section .peoplepanel {
+  flex: 1 1 auto;
+}
+
+.ad-section .pp-sessions {
+  border-top: none;
+}
+
+.ad-section .pp-stranscript {
+  max-height: 320px;
+}

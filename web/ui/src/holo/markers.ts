@@ -2,7 +2,8 @@
 // Healthy = --ok with a gentle pulse; dead = --fault with an irregular
 // 4-7 Hz "dying neon" flicker; teach-picked = --warn.
 import * as THREE from 'three';
-import { PALETTE } from './materials';
+import { PALETTES } from './materials';
+import type { HoloTheme } from './materials';
 import { lerp } from './easing';
 
 export interface MarkerVisualState {
@@ -12,9 +13,23 @@ export interface MarkerVisualState {
   extHover: boolean;
 }
 
-const COL_OK = new THREE.Color(PALETTE.ok);
-const COL_FAULT = new THREE.Color(PALETTE.fault);
-const COL_WARN = new THREE.Color(PALETTE.warn);
+interface MarkerColours { ok: THREE.Color; fault: THREE.Color; warn: THREE.Color; ring: number; }
+const COLOURS: Record<HoloTheme, MarkerColours> = {
+  dark: {
+    ok: new THREE.Color(PALETTES.dark.ok),
+    fault: new THREE.Color(PALETTES.dark.fault),
+    warn: new THREE.Color(PALETTES.dark.warn),
+    ring: PALETTES.dark.ring,
+  },
+  light: {
+    ok: new THREE.Color(PALETTES.light.ok),
+    fault: new THREE.Color(PALETTES.light.fault),
+    warn: new THREE.Color(PALETTES.light.warn),
+    ring: PALETTES.light.ring,
+  },
+};
+// The wide halo is a blob of light on black; on paper it is a soft colour dot.
+const GLOW_BASE: Record<HoloTheme, number> = { dark: 0.5, light: 0.28 };
 
 export class MotorMarker {
   readonly id: number;
@@ -33,9 +48,13 @@ export class MotorMarker {
   private pulsePhase: number;
   private hoverOp: number;
   private pickOp: number;
+  private cols: MarkerColours;
+  private glowBase: number;
 
-  constructor(id: number, glowTex: THREE.Texture, ringTex: THREE.Texture) {
+  constructor(id: number, glowTex: THREE.Texture, ringTex: THREE.Texture, theme: HoloTheme = 'dark') {
     this.id = id;
+    this.cols = COLOURS[theme];
+    this.glowBase = GLOW_BASE[theme];
     this.state = { ok: true, present: true, picked: false, extHover: false };
     this.flickerLeft = 0;
     this.flickerVal = 1;
@@ -48,7 +67,7 @@ export class MotorMarker {
     // soft gradient ball: a bright core sprite inside the wider halo
     this.coreMat = new THREE.SpriteMaterial({
       map: glowTex,
-      color: COL_OK,
+      color: this.cols.ok,
       transparent: true,
       opacity: 0.95,
       depthTest: false,
@@ -62,9 +81,9 @@ export class MotorMarker {
 
     this.glowMat = new THREE.SpriteMaterial({
       map: glowTex,
-      color: COL_OK,
+      color: this.cols.ok,
       transparent: true,
-      opacity: 0.5,
+      opacity: this.glowBase,
       depthTest: false,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
@@ -76,7 +95,7 @@ export class MotorMarker {
 
     this.hoverMat = new THREE.SpriteMaterial({
       map: ringTex,
-      color: PALETTE.ring,
+      color: this.cols.ring,
       transparent: true,
       opacity: 0,
       depthTest: false,
@@ -89,7 +108,7 @@ export class MotorMarker {
 
     this.pickMat = new THREE.SpriteMaterial({
       map: ringTex,
-      color: COL_WARN,
+      color: this.cols.warn,
       transparent: true,
       opacity: 0,
       depthTest: false,
@@ -106,6 +125,24 @@ export class MotorMarker {
     this.hitProxy = new THREE.Mesh(this.proxyGeom, this.proxyMat);
     this.hitProxy.userData.motorId = id;
     this.group.add(this.hitProxy);
+    if (theme !== 'dark') this.setTheme(theme);
+  }
+
+  /**
+   * Re-skin an existing marker. robot.ts builds the markers without a theme
+   * (it is the deck's file), so index.ts calls this for the light stage after
+   * the rig is built. Never called for 'dark': the constructor IS the dark look.
+   */
+  setTheme(theme: HoloTheme): void {
+    this.cols = COLOURS[theme];
+    this.glowBase = GLOW_BASE[theme];
+    const blending = theme === 'dark' ? THREE.AdditiveBlending : THREE.NormalBlending;
+    for (const m of [this.coreMat, this.glowMat]) {
+      m.blending = blending;
+      m.needsUpdate = true;
+    }
+    this.hoverMat.color.set(this.cols.ring);
+    this.pickMat.color.copy(this.cols.warn);
   }
 
   /** `hovered` = raycast hover OR external row-hover OR setHighlight match. */
@@ -113,7 +150,7 @@ export class MotorMarker {
     const s = this.state;
     const dead = !s.present || !s.ok;
 
-    const col = s.picked ? COL_WARN : dead ? COL_FAULT : COL_OK;
+    const col = s.picked ? this.cols.warn : dead ? this.cols.fault : this.cols.ok;
     this.coreMat.color.copy(col);
     this.glowMat.color.copy(col);
 
@@ -132,7 +169,7 @@ export class MotorMarker {
     }
 
     this.coreMat.opacity = 0.95 * intensity * globalDim;
-    this.glowMat.opacity = 0.5 * intensity * globalDim;
+    this.glowMat.opacity = this.glowBase * intensity * globalDim;
 
     const ease = 1 - Math.exp(-dt * 14);
     this.hoverOp = lerp(this.hoverOp, hovered ? 0.9 : 0, ease);

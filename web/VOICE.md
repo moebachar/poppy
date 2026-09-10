@@ -225,8 +225,10 @@ a server lock would close the cycle.
   "nudge": 0,
   "duplex": "full",
   "identify": true,
+  "gestures": true,
   "input": null,
   "output": null,
+  "ptt_key": "KeyV",
   "people": 3,
   "moves": 4,
   "resp": null,
@@ -237,9 +239,15 @@ a server lock would close the cycle.
 - `phase` is `off` when the child is not running, `starting` from spawn until
   the first `@ready`, then whatever the child last reported, `error` if it died
   badly (`error` carries the sentence).
-- `voice`/`model`/`vad`/`fx`/`nudge`/`duplex`/`identify`/`input`/`output` are the
-  **preferences**, persisted to `web/voice_prefs.json` and echoed back whether or
-  not a session is running. They only take effect at the next start.
+- `voice`/`model`/`vad`/`fx`/`nudge`/`duplex`/`identify`/`gestures`/`input`/
+  `output`/`ptt_key` are the **preferences**, persisted to
+  `web/voice_prefs.json` and echoed back whether or not a session is running.
+  They only take effect at the next start — except `ptt_key`, which is the
+  browser's business and applies at once: it is the `KeyboardEvent.code` (the
+  physical key, so AZERTY and QWERTY agree) that the deck's HOLD TO TALK and
+  the kiosk's bar listen for, default `KeyV` — and except `gestures` (bool,
+  default true), which the bridge itself consumes (§2.8) and reads on every
+  use, so that toggle bites at once too.
 - `resp` — `{"avg":0.62,"n":14}` from `@prof`, or null.
 - `enroll` — null, or the guided-enrolment session (§2.5).
 
@@ -265,15 +273,19 @@ so a browser reload does not lose the conversation.
 ### 2.3 REST — voice
 
 - `GET  /api/voice` → VoiceState
-- `POST /api/voice {"on":true}` — persist any preference keys also present in
-  the body (`voice`,`model`,`vad`,`fx`,`nudge`,`duplex`,`identify`,`input`,
-  `output`), then spawn. 409 if already on. 503 if `OPENAI_API_KEY` is missing
-  (say so in the sentence — that is a real failure mode).
+- `POST /api/voice {"on":true}` — spawn. 409 if already on. 503 if
+  `OPENAI_API_KEY` is missing (say so in the sentence — that is a real failure
+  mode).
   `{"on":false}` — send `@interrupt`, then `@quit`, wait ≤ 45 s for `@bye`,
   then terminate. If the child printed that it is mining the transcript, wait
   20 s longer: `identity.extract_facts` sits on a 25 s `urlopen`, and killing it
   there loses the new memories while the deck reports a clean "session ended".
-  Idempotent. Preference-only writes are allowed with `on` omitted.
+  Idempotent. `on` is the whole body: this route is ungated, because the deck's
+  VOICE key sits in front of the password, and it used to write the nine
+  preference keys as well — one setting behind two doors with only one of them
+  locked. Any of `voice`,`model`,`vad`,`fx`,`nudge`,`duplex`,`identify`,
+  `gestures`,`input`,`output`,`ptt_key` here is now a 400 naming the keys and pointing
+  at SPEECH on the admin page (§5.3). A body with no `on` is a 400 too.
 - `POST /api/voice/cmd {"cmd":"interrupt"|"nudge"}` — 409 when off.
 - `POST /api/voice/ptt {"down":true|false}` — 409 unless `duplex=="ptt"`.
 - `POST /api/voice/tag {"name":"Karim"}` — `@enroll` on the voice that spoke
@@ -282,7 +294,11 @@ so a browser reload does not lose the conversation.
 
 Validation: `voice` ∈ the 10 realtime voices; `model` ∈ `gpt-realtime-2.1`,
 `gpt-realtime-2.1-mini`; `vad` ∈ `semantic`,`server`; `fx` 0–1; `nudge` 0–600;
-`duplex` ∈ `full`,`gate`,`ptt`; `input`/`output` null or an int device index.
+`duplex` ∈ `full`,`gate`,`ptt`; `identify`/`gestures` bools; `input`/`output`
+null or an int device index;
+`ptt_key` a key code matching `voicelink.PTT_KEY_RE` — letters, digits, F1–F12,
+left/right Shift/Ctrl/Alt, Enter, the numpad and the punctuation keys; never
+Space (STOP), Escape or Tab.
 
 ### 2.4 REST — people
 
@@ -367,7 +383,12 @@ worker that died taking torch with it cannot block the voice session for ever.
 - `GET /api/sessions` → `[{"file":"20260821-104900.jsonl","when":"2026-08-21 10:49",
   "lines":42,"who":["Mohamed","poppy"]}]`, newest first, 30 max.
 - `GET /api/sessions/{file}` → `{"rows":[{"t":"…","who":"…","text":"…"}]}`,
-  400 unless `file` matches `^[0-9]{8}-[0-9]{6}\.jsonl$`.
+  400 unless `file` matches `^[0-9]{8}-[0-9]{6}\.jsonl$`, 404 when there is no
+  such file.
+
+Both session routes require `X-Admin-Token` (§5.2). A past transcript is the
+raw material the personal facts were mined out of, so it sits behind the same
+gate the people routes do, and SESSIONS lives on the admin page (§5.4).
 
 ### 2.7 WebSocket additions
 
@@ -400,6 +421,28 @@ milliseconds stale by the time it goes out, and overwrites the newer
 `{"t":"voice"}` the deck received while the bridge was reading. The
 high-frequency `voice`/`lvl` messages exist so phase changes do not re-broadcast
 all 13 motors.
+
+### 2.8 Body language — the idle routine
+
+One command, on a clock: a 1 Hz daemon loop (started by `wire()`) sends
+`gesture_idle` to the motion server every 60 s of ready-and-quiet body —
+only when power is `ready`, nothing owns the motion bus, and no guided
+enrolment is open (servo noise would land in the voiceprint clip). It is
+deliberately INDEPENDENT of the voice: he stirs whether or not anyone is
+talking, and the routine itself (look left/right, a touch of the hands,
+glide back onto the stance — CONTRACT.md §1) is the motion server's. A
+motion-server READY resets the clock so a fresh body gets a full quiet
+minute first. The continuous talking sway (`talk_on`/`talk_off`) was
+retired — a failure mid-sway could strand the body off-stance; the motion
+server still accepts the two commands as no-ops for compatibility.
+Everything here is gated on the `gestures` pref (§2.1): off means no
+command is ever sent. The loop never writes to the motion pipe while
+holding a voicelink lock — the lock order of §2 stands.
+
+Known limitation: `GET /api/admin/preview` does not show the
+`perception/event_context.md` system item that live_agent injects each
+connect (§5-adjacent) — the preview covers the standing prompt, roster and
+tools only.
 
 ---
 
@@ -572,9 +615,10 @@ agent does not need the body.
   slider 0–1, nudge seconds stepper, and the mic/speaker device pickers from
   `/api/audio/devices`. Changing anything while a session is live shows the
   one allowed sentence: `TAKES EFFECT AT THE NEXT SESSION`.
-- With `duplex == "ptt"` and a session live, a wide `HOLD TO TALK` key appears
-  above the transcript; pointer-down/up and the `V` key both drive
-  `/api/voice/ptt`.
+- With `duplex == "ptt"` and a session live, a wide `HOLD TO TALK · V` key
+  appears above the transcript; pointer-down/up and the configured key
+  (`ptt_key`, SPEECH › PTT KEY on the admin page, default `V`) both drive
+  `/api/voice/ptt`. The same key drives the kiosk's bar (KIOSK.md §3.4).
 
 ### 4.4 PEOPLE tab
 
@@ -610,7 +654,207 @@ them. `api.ts` gains the REST helpers and routes the four new WS messages.
 
 ---
 
-## 5. Non-negotiables
+## 5. The admin page — configuring the agent (track E)
+
+Everything that shapes Poppy — who he is, what he can do, how he hears —
+lives on one password-gated page. Nothing about the agent should require
+editing Python any more.
+
+### 5.1 Where the configuration lives
+
+Two files, one API. Defaults live in **code**, the JSON stores only what was
+changed, so a later default improvement still reaches an existing install and
+"reset to default" means something.
+
+- **`perception/agent_config.py`** (new) — defaults + load/save + the tool
+  builder. Owned by the agent, used by the bridge, so a preview cannot drift
+  from what is actually sent.
+  - `DEFAULTS` holds `instructions` (today's `INSTRUCTIONS` literal), `greeting`
+    (the wake-up line instruction), `nudge_prompt` (the unprompted-line
+    instruction), `tools`, `recognition`.
+  - `load()` → the merged config. `load_why()` → `(config, error)` in one
+    read, so the console complaint and the deck's `@err` can never disagree.
+    `save(patch)` → validated write. `reset(path)` → drop an override.
+  - `build_tools(moves, cfg)` moves here out of `live_agent.py`. Both the agent
+    and `GET /api/admin/preview` call it.
+  - File: `perception/agent_config.json`, UTF-8, committed (it is the agent's
+    personality, and it should be in git history).
+  - **A broken override file is never fatal.** A JSON typo in a personality
+    file must not be why the robot is mute, so the whole file is dropped and
+    the built-in defaults run instead — with the offending field named, on the
+    console (`[cfg] … IGNORED, running on the defaults — …`), in `--check`, on
+    the deck's error line, and as `error` in `GET /api/admin/config`.
+    "Broken" is **not only "will not parse"**: the merged tree is validated
+    too, so `{"wave": "off"}` where `{"wave": {"enabled": false}}` was meant —
+    the plausible way a merge conflict gets resolved — is caught here instead
+    of detonating half a minute later inside a paid session, and a null or
+    numeric `instructions` can never reach the API. The **editing** paths
+    (`save`, `reset`) read the file raw rather than validated, so a file that
+    is merely wrong-shaped can still be repaired field by field; RESET is the
+    way out of a bad hand-edit, and it copies the file aside as `.broken`
+    before it rewrites anything.
+- **`web/voice_prefs.json`** — unchanged, per-machine session parameters
+  (voice, model, vad, duplex, fx, nudge seconds, identify, devices, the
+  push-to-talk key). Gitignored.
+
+`tools` is `{"stop_moving": {"enabled": true, "description": "…"}, …}` for the
+three built-ins, plus `moves: {"wave": {"enabled": true}, …}`. A move's own
+`description`/`when` stay in its JSON file and are still edited from SEQUENCES —
+the admin page only turns a move on or off for the model.
+
+`recognition` exposes the numbers that decide who is speaking, because they are
+tuned against a real room and this is where you tune them:
+`confident` (0.36), `tentative` (0.26), `margin` (0.06), `min_seconds` (0.9),
+`adapt_score` (0.45), `adapt_margin` (0.10), `adapt_seconds` (2.5).
+`identity.apply_tuning(dict)` sets the module constants; the agent calls it at
+startup. Every value is range-checked; a bad one is refused, not clamped.
+
+### 5.2 Access
+
+A **soft gate on a localhost-only dashboard**, not real security — say so in
+the UI in as few words as it takes, and never imply more.
+
+- Password stored as a salted SHA-256 in `web/admin_auth.json` (gitignored),
+  created on first run with the password **`1234`**.
+- `POST /api/admin/login {"password":"…"}` → `{"token":"…","expires":"…"}`.
+  Tokens are `secrets.token_urlsafe(24)`, held in memory, 8 h expiry, dropped
+  on bridge restart. Wrong password → 401 after a fixed ~250 ms delay, and no
+  hint about which part was wrong.
+- `POST /api/admin/password {"current":"…","next":"…"}` → re-hash. `next` must
+  be 4–64 characters.
+- Every `/api/admin/*` except `login`, **every `/api/people/*`** and **every
+  `/api/sessions*`**, requires `X-Admin-Token`; missing or expired → 401. Those
+  endpoints are behind the gate because voiceprints, transcripts and personal
+  facts are exactly what a password is for here. `/api/voice/chat` is
+  deliberately NOT gated: that is the deck's own live panel, which sits in
+  front of the password. The rule lives in one function, `admin.gated(path)`,
+  checked in the middleware **before routing** — a route added later cannot
+  forget it, and a path that reaches no route at all is refused just the same.
+- A refusal is counted per client host: 5 honest tries, then a lock of
+  5 s / 30 s / 2 min / 10 min / 30 min, cleared by a success or an hour of
+  quiet, answered 429 with the wait in words. The lock is checked BEFORE the
+  password compare, so a correct password during a lock is refused too and
+  leaks nothing. The fixed 250 ms delay is a timing shield, not a rate limit:
+  the route runs on a 40-wide thread pool, so the delay alone allowed ~160
+  guesses a second — the whole 4-digit space, and the shipped `1234`, inside a
+  minute.
+- The browser keeps the token in `sessionStorage` only — a closed tab
+  re-prompts. Never `localStorage`, never a cookie.
+
+**Same-origin, on every write.** The token is a soft gate on a localhost
+dashboard; the layer that makes it mean anything is that a browser cannot forge
+or omit `Origin`. One rule, `server.own_origin(headers)`, used by the
+middleware and by `/ws`:
+
+- **No `Origin` header at all → allow.** curl, a script and the voice agent
+  never send one, and they are not the threat.
+- **`Origin` present** → allow only when its scheme is http/https, its host is
+  one of `127.0.0.1` / `localhost` / `::1` / the `Host` the request was
+  addressed to, AND its port equals the port that `Host` names. The port the
+  request was addressed to is the authority: another app of the operator's on
+  another port is a different origin.
+- **Anything unparseable → refuse.** An `Origin` we do not understand is not
+  ours, `null` included.
+
+Applied to every method except GET/HEAD/OPTIONS → 403 *"that request did not
+come from this deck"*, before routing and before the token check. The GET
+routes need no such check: with no CORS headers on the answer, a page can send
+the request but never read the reply. `/ws` is the exception that does need it
+on a read — WebSockets are exempt from CORS and the frames are read directly,
+so the handshake runs the same rule and closes with 1008 **before** `accept()`.
+`BaseHTTPMiddleware` never sees a websocket scope, which is why that one check
+lives on the endpoint.
+
+Request bodies are capped at 256 KB (`server.MAX_BODY`) — a declared
+`Content-Length` is refused before anything is read, and a chunked body is
+refused as it crosses the line. Over it → 413 with the limit in the sentence.
+
+### 5.3 REST
+
+- `GET  /api/admin/config` → `{"prompt":{…},"tools":{…},"recognition":{…},
+  "params":{…},"defaults":{…},"changed":["prompt.instructions", …]}`
+  `defaults` is the full default tree so the UI can diff and offer a reset;
+  `changed` is the list of paths that currently differ.
+- `POST /api/admin/config` — a patch of the same shape. Validates, writes,
+  broadcasts `{"t":"voice"}`. Returns the new config. A `params` block is the
+  SPEECH settings and is written straight to `web/voice_prefs.json`: they are
+  per-machine, not agent overrides, so nothing about them is ever `changed` and
+  they cannot be `reset` (`{"path":"params"}` → 400). **This is the only way
+  in** — `POST /api/voice` refuses them (§2.3). The answer's `params` is what is
+  actually on disk after the write, so a page whose socket is down can settle
+  its own draft from the reply instead of waiting for a `{"t":"voice"}` that is
+  not coming.
+  One writer at a time: the config file is a read-modify-write, so two saves
+  landing milliseconds apart used to keep only one edit while both answers
+  looked right.
+- `POST /api/admin/config/reset {"path":"prompt.instructions"}` — drop one
+  override (or `{"path":"*"}` for everything, which the UI must confirm).
+- `GET  /api/admin/preview` → `{"instructions":"…","roster":"…","tools":[…],
+  "session":{…}}` — the **exact** strings and tool JSON the next session will
+  send, assembled by the same code that sends them.
+- People routes are unchanged apart from now requiring the token.
+
+Limits: `instructions` ≤ 20 000 chars, `greeting`/`nudge_prompt` ≤ 2 000, a tool
+description ≤ 1 000. Anything longer is a 400 with the limit in the sentence.
+
+Config edits take effect at the **next session**; the UI says so once, in the
+same words the VOICE tab already uses.
+
+### 5.4 The page
+
+A full-window page, not a panel — reached from an `ADMIN` key in the top bar,
+left again by `CLOSE`. `App.tsx` renders the deck or the admin page from one
+store field. The hologram is not on this page; it keeps running underneath and
+is still there when you come back.
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ POPPY / ADMIN                                     [CLOSE]        │
+├───────────────┬──────────────────────────────────────────────────┤
+│ PERSONALITY   │  the section, one column, hairline-separated     │
+│ TOOLS         │  rows, the same 10px labels as the deck          │
+│ SPEECH        │                                                  │
+│ RECOGNITION   │                                                  │
+│ PEOPLE        │                                                  │
+│ SESSIONS      │                                                  │
+│ PREVIEW       │                                                  │
+│ ACCESS        │                                                  │
+└───────────────┴──────────────────────────────────────────────────┘
+```
+
+- **PERSONALITY** — `instructions` in a full-height monospace textarea, plus
+  `greeting` and `nudge_prompt`. A `RESET` per field, enabled only when that
+  field differs from the default. A character count against the limit. Nothing
+  auto-saves: `SAVE` and `REVERT` keys, and leaving with unsaved edits warns.
+- **TOOLS** — one row per tool: name, ON/OFF, and the description the model
+  sees (editable for the three built-ins, read-only for moves with a link
+  through to SEQUENCES). Turning `enroll_speaker` off should visibly explain
+  what he loses, in ≤ 2 words plus a tooltip-free inline line.
+- **SPEECH** — exactly the controls that were in the VOICE tab's CONFIG block
+  plus `PTT KEY` (press the button, then press the key you want; Space,
+  Escape and Tab are refused with a word, the choice is the physical key
+  code — §2.1 `ptt_key`),
+  moved here verbatim. The VOICE tab loses its CONFIG key and keeps status,
+  transcript, meter and the action keys. SAVE goes to the gated
+  `POST /api/admin/config` as `params` (§5.3), not to `POST /api/voice`, and it
+  settles its own draft from the reply so a save with the socket down does not
+  leave SAVE lit and CLOSE warning about edits that are already on disk.
+- **RECOGNITION** — the seven numbers, each with its default shown, a range,
+  and one plain sentence saying what raising it does. This is where somebody
+  goes when Poppy keeps calling a friend a stranger.
+- **PEOPLE** — the existing `PeoplePanel`, moved here whole. The side column's
+  PEOPLE tab is removed; tabs become SEQUENCES · VOICE.
+- **SESSIONS** — the read-only transcript browser, moved here too.
+- **PREVIEW** — the assembled prompt and the tool JSON, read-only, monospace,
+  scrollable. What the model will actually be given.
+- **ACCESS** — change the password. Shows the "local dashboard, soft gate"
+  sentence.
+
+Design rules are unchanged: radius 0, no gradients on surfaces, no emoji, no
+drop shadows, hairlines do the structuring, labels ≤ 2 words. The admin page is
+denser than the deck but must look like the same instrument.
+
+## 6. Non-negotiables
 
 - Only ONE process owns the serial bus, ever. The voice agent gets its moves
   through the bridge or not at all.

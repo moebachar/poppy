@@ -81,15 +81,21 @@ export interface VoiceState {
   nudge: number
   duplex: VoiceDuplex
   identify: boolean
+  /** small idle + talking motions while a session is up */
+  gestures: boolean
   input: number | null
   output: number | null
+  /** the push-to-talk key as a KeyboardEvent.code, e.g. "KeyV" (src/pttKey.ts) */
+  ptt_key: string
   people: number
   moves: number
   resp: { avg: number; n: number } | null
   enroll: EnrollState | null
 }
 
-/** The keys POST /api/voice accepts alongside `on`. */
+/** The eleven speech settings — voicelink.PREF_KEYS, one for one. They are NOT
+ *  part of POST /api/voice any more (that route takes `on` and refuses these);
+ *  they are written through the gated POST /api/admin/config as `params`. */
 export type VoicePrefs = Partial<
   Pick<
     VoiceState,
@@ -100,8 +106,10 @@ export type VoicePrefs = Partial<
     | 'nudge'
     | 'duplex'
     | 'identify'
+    | 'gestures'
     | 'input'
     | 'output'
+    | 'ptt_key'
   >
 >
 
@@ -180,6 +188,104 @@ export const REALTIME_VOICES = [
 ] as const
 
 export const REALTIME_MODELS = ['gpt-realtime-2.1', 'gpt-realtime-2.1-mini'] as const
+
+// ---- admin (web/VOICE.md §5) ---------------------------------------------
+
+export interface AdminPrompt {
+  instructions: string
+  greeting: string
+  nudge_prompt: string
+}
+
+/** A tool the model may be handed. A move carries no description here — its
+ *  own lives in the move file and is still edited from SEQUENCES. */
+export interface AdminTool {
+  enabled: boolean
+  description?: string
+}
+
+/** The built-ins by name (stop_moving, enroll_speaker, remember_person),
+ *  plus `moves` — one entry per recorded move. */
+export interface AdminTools {
+  moves: Record<string, AdminTool>
+  [name: string]: AdminTool | Record<string, AdminTool>
+}
+
+/** The seven numbers that decide who is speaking (VOICE.md §5.1). */
+export interface AdminRecognition {
+  confident: number
+  tentative: number
+  margin: number
+  min_seconds: number
+  adapt_score: number
+  adapt_margin: number
+  adapt_seconds: number
+}
+
+export interface AdminTree {
+  prompt: AdminPrompt
+  tools: AdminTools
+  recognition: AdminRecognition
+}
+
+export interface AdminConfig extends AdminTree {
+  /** per-machine session parameters, echoed from web/voice_prefs.json */
+  params?: VoicePrefs
+  /** the full default tree, so a field can be diffed and offered a reset */
+  defaults?: AdminTree
+  /** dotted paths that currently differ from the default */
+  changed: string[]
+  /** why perception/agent_config.json is being ignored, when it is. The tree
+   *  above is then pure defaults and `changed` is empty — which would
+   *  otherwise read as "nothing was ever changed". */
+  error?: string | null
+}
+
+/** POST /api/admin/config — a patch of the same shape. `params` is the SPEECH
+ *  block: per-machine, so it is written straight to web/voice_prefs.json
+ *  rather than stored as an agent override, but it travels this gated route
+ *  because POST /api/voice no longer accepts a preference key. */
+export interface AdminPatch {
+  prompt?: Partial<AdminPrompt>
+  tools?: AdminTools
+  recognition?: Partial<AdminRecognition>
+  params?: VoicePrefs
+}
+
+export interface AdminPreview {
+  instructions: string
+  roster: string
+  tools: unknown[]
+  session: Record<string, unknown>
+}
+
+export interface AdminLogin {
+  token: string
+  expires: string
+}
+
+/** VOICE.md §5.3 — anything longer comes back as a 400. */
+export const ADMIN_LIMITS = {
+  instructions: 20000,
+  greeting: 2000,
+  nudge_prompt: 2000,
+  description: 1000,
+} as const
+
+function isTool(v: AdminTool | Record<string, AdminTool>): v is AdminTool {
+  return typeof (v as { enabled?: unknown }).enabled === 'boolean'
+}
+
+/** The built-in tools, in the order the bridge sent them — `moves` is not one. */
+export function builtinTools(t: AdminTools): [string, AdminTool][] {
+  const out: [string, AdminTool][] = []
+  for (const k of Object.keys(t)) {
+    if (k === 'moves') continue
+    const v = t[k]
+    if (isTool(v)) out.push([k, v])
+  }
+  return out
+}
 
 export interface HealthMotors {
   maxtemp: number | null

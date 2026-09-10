@@ -58,6 +58,13 @@ export default function TopBar() {
         <div className="seg">
           <span className="seg-value">{uptime}</span>
         </div>
+        <button
+          type="button"
+          className="seg segkey"
+          onClick={() => useStore.getState().setPage('admin')}
+        >
+          ADMIN
+        </button>
       </div>
       {!wsConnected && <div className="link-lost-rule" />}
     </header>

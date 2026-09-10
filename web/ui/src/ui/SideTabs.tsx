@@ -3,10 +3,11 @@
 import { useStore } from '../state'
 import type { SideTab } from '../state'
 
+// PEOPLE moved to the admin page (VOICE.md §5.4) — voiceprints and personal
+// facts live behind the gate now.
 const TABS: { id: SideTab; label: string }[] = [
   { id: 'seq', label: 'SEQUENCES' },
   { id: 'voice', label: 'VOICE' },
-  { id: 'people', label: 'PEOPLE' },
 ]
 
 export default function SideTabs() {

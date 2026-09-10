@@ -1,6 +1,6 @@
 {
   "name": "stand",
-  "saved": "2026-08-19 (abs_z rotated 180: clamp lever now at the back)",
+  "saved": "2026-08-19 (abs_z rotated 180: clamp lever now at the back); 54 added 2026-09-09 after the elbow replacement, sampled from a hand-held mirror of the left arm",
   "positions": {
     "33": -161.93,
     "34": 89.63,
@@ -13,6 +13,7 @@
     "44": -161.19,
     "51": 75.74,
     "52": 20.7,
-    "53": -77.14
+    "53": -77.14,
+    "54": -129.8
   }
 }

@@ -24,7 +24,7 @@ export const CAL: Record<
   51: { node: 'rShoulderY', axis: 'x', sign: -1, offset:   75.74 },
   52: { node: 'rShoulderX', axis: 'z', sign: -1, offset:   20.70 },
   53: { node: 'rArmZ',      axis: 'y', sign:  1, offset:  -77.14 },
-  54: { node: 'rElbowY',    axis: 'x', sign: -1, offset:  -90.0  },
+  54: { node: 'rElbowY',    axis: 'x', sign: -1, offset: -129.80 },  // new motor 2026-09-09
 };
 
 export const MOTOR_IDS = Object.keys(CAL).map(Number);

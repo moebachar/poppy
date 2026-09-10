@@ -9,6 +9,7 @@
 // phase is a weight that cross-fades against the others.
 import * as THREE from 'three';
 import { clamp01, easeOutQuart, lerp } from './easing';
+import type { HoloTheme } from './materials';
 
 export type VoicePhase =
   'off' | 'connecting' | 'listening' | 'hearing' | 'thinking' | 'speaking';
@@ -60,9 +61,32 @@ const RING_LIFE = 1.3;
 const PHASES: VoicePhase[] =
   ['off', 'connecting', 'listening', 'hearing', 'thinking', 'speaking'];
 
-const COL_LOW = new THREE.Color(0x1e5c99);
-const COL_MID = new THREE.Color(0x4fc3ff);
-const COL_HIGH = new THREE.Color(0xcff3ff);
+// The dark ramp glows on black; the light one is a watercolour wash on paper
+// that deepens instead of brightening (KIOSK.md §2). `hot` is what the shaders
+// mix toward on a syllable: white on black, and deep cobalt on paper, because
+// mixing toward white on a white page is mixing toward nothing. `gain` lifts
+// the alphas for normal blending, which is far fainter than additive at the
+// same numbers.
+interface AuraLook { low: THREE.Color; mid: THREE.Color; high: THREE.Color;
+                     hot: THREE.Color; gain: number; blending: THREE.Blending; }
+const LOOKS: Record<HoloTheme, AuraLook> = {
+  dark: {
+    low: new THREE.Color(0x1e5c99),
+    mid: new THREE.Color(0x4fc3ff),
+    high: new THREE.Color(0xcff3ff),
+    hot: new THREE.Color(0xffffff),
+    gain: 1.0,
+    blending: THREE.AdditiveBlending,
+  },
+  light: {
+    low: new THREE.Color(0x1b4f8a),
+    mid: new THREE.Color(0x3b8ee0),
+    high: new THREE.Color(0x8fc6f5),
+    hot: new THREE.Color(0x1450b8),
+    gain: 1.8,
+    blending: THREE.NormalBlending,
+  },
+};
 
 /** One-pole follower with separate attack/release — snap up, relax down. */
 function follow(cur: number, target: number, dt: number, up: number, down: number): number {
@@ -71,9 +95,9 @@ function follow(cur: number, target: number, dt: number, up: number, down: numbe
 }
 
 /** The vertical gradient, sampled on the CPU so rings match the shell. */
-function rampAt(t: number, out: THREE.Color): void {
-  if (t < 0.5) out.copy(COL_LOW).lerp(COL_MID, clamp01(t * 2));
-  else out.copy(COL_MID).lerp(COL_HIGH, clamp01((t - 0.5) * 2));
+function rampAt(look: AuraLook, t: number, out: THREE.Color): void {
+  if (t < 0.5) out.copy(look.low).lerp(look.mid, clamp01(t * 2));
+  else out.copy(look.mid).lerp(look.high, clamp01((t - 0.5) * 2));
 }
 
 // ---- GLSL ---------------------------------------------------------------
@@ -185,6 +209,7 @@ uniform vec3 uColHigh;
 uniform float uAlpha;     // the shell's rim
 uniform float uFuzz;      // the point cloud, scaled independently of the rim
 uniform float uTint;      // 1 = pulled down to the deep blue (hearing)
+uniform vec3 uHot;        // what a syllable mixes toward: white on black
 
 vec3 ramp(float t) {
   vec3 c = t < 0.5 ? mix(uColLow, uColMid, t * 2.0)
@@ -242,7 +267,7 @@ void main() {
 
   float t = clamp(vP.y * 0.5 + 0.5, 0.0, 1.0);
   float hot = clamp(uEnergy * 0.30 * band + b * 0.45, 0.0, 0.38);
-  vec3 col = mix(ramp(t), vec3(1.0), hot);
+  vec3 col = mix(ramp(t), uHot, hot);
   float a = uAlpha * (band * (1.0 + b * 1.4) + haze);
   a *= 1.0 - smoothstep(0.90, 1.0, r);   // never let it reach the quad's edge
   if (a <= 0.002) discard;
@@ -272,7 +297,7 @@ void main() {
   vec3 p = d * (1.0 + field(d) + gap) * uRadii * uScale;
   float tw = 0.35 + 0.65 * pow(abs(sin(uFlow * 1.25 + ph)), 3.0);
   float lit = clamp(uEnergy * 0.55 + b * 0.35, 0.0, 0.75);
-  vCol = mix(ramp(clamp(d.y * 0.5 + 0.5, 0.0, 1.0)), vec3(1.0), lit);
+  vCol = mix(ramp(clamp(d.y * 0.5 + 0.5, 0.0, 1.0)), uHot, lit);
   // the fuzz carries its own weight: the shell is a rim now, and "it fuzzes"
   // is the part of the brief these points ARE
   vA = uFuzz * (0.35 + 0.85 * uEnergy) * tw * (0.30 + 0.70 * b) * safeFade(p);
@@ -331,7 +356,8 @@ interface Ring {
   alive: boolean;
 }
 
-export function createAura(): VoiceAura {
+export function createAura(theme: HoloTheme = 'dark'): VoiceAura {
+  const look = LOOKS[theme];
   const group = new THREE.Group();
   group.position.y = CENTER_Y;
 
@@ -350,9 +376,10 @@ export function createAura(): VoiceAura {
     uOrbit: { value: 0 },
     uOrbitAmp: { value: 0 },
     uB: { value: [0, 0, 0, 0, 0, 0, 0, 0] },
-    uColLow: { value: COL_LOW.clone() },
-    uColMid: { value: COL_MID.clone() },
-    uColHigh: { value: COL_HIGH.clone() },
+    uColLow: { value: look.low.clone() },
+    uColMid: { value: look.mid.clone() },
+    uColHigh: { value: look.high.clone() },
+    uHot: { value: look.hot.clone() },
     uAlpha: { value: 0 },
     uFuzz: { value: 0 },
     uTint: { value: 0 },
@@ -373,7 +400,7 @@ export function createAura(): VoiceAura {
     vertexShader: HALO_VERT,
     fragmentShader: HALO_FRAG,
     transparent: true,
-    blending: THREE.AdditiveBlending,
+    blending: look.blending,
     depthWrite: false,
     depthTest: false,
     side: THREE.DoubleSide,
@@ -408,7 +435,7 @@ export function createAura(): VoiceAura {
     vertexShader: FUZZ_VERT,
     fragmentShader: FUZZ_FRAG,
     transparent: true,
-    blending: THREE.AdditiveBlending,
+    blending: look.blending,
     depthWrite: false,
   });
   const fuzz = new THREE.Points(fuzzGeom, fuzzMat);
@@ -421,14 +448,14 @@ export function createAura(): VoiceAura {
   for (let i = 0; i < RING_COUNT; i++) {
     const mat = new THREE.ShaderMaterial({
       uniforms: {
-        uColor: { value: COL_MID.clone() },
+        uColor: { value: look.mid.clone() },
         uAlpha: { value: 0 },
         uPhase: { value: 0 },
       },
       vertexShader: RING_VERT,
       fragmentShader: RING_FRAG,
       transparent: true,
-      blending: THREE.AdditiveBlending,
+      blending: look.blending,
       depthWrite: false,
       side: THREE.DoubleSide,
     });
@@ -479,7 +506,7 @@ export function createAura(): VoiceAura {
     slot.mesh.rotation.set(-Math.PI / 2 + (Math.random() - 0.5) * 0.9, 0,
                            (Math.random() - 0.5) * 0.9);
     slot.mat.uniforms.uPhase.value = Math.random() * TAU;
-    rampAt(clamp01(y / RADII[1] * 0.5 + 0.5), scratch);
+    rampAt(look, clamp01(y / RADII[1] * 0.5 + 0.5), scratch);
     (slot.mat.uniforms.uColor.value as THREE.Color).copy(scratch);
   }
 
@@ -502,7 +529,7 @@ export function createAura(): VoiceAura {
       const edge = 1 - clamp01((rad - 0.36) / 0.22);
       // W[0] is 'off': a ring in flight when the session ends fades with the
       // rest of the field instead of hanging there
-      r.mat.uniforms.uAlpha.value = 0.5 * r.gain * env * edge * (1 - W[0]);
+      r.mat.uniforms.uAlpha.value = look.gain * 0.5 * r.gain * env * edge * (1 - W[0]);
       r.mesh.visible = true;
     }
   }
@@ -608,18 +635,18 @@ export function createAura(): VoiceAura {
       // body blows out long before the number looks big, and a field that
       // hides the robot has defeated itself.
       const connPulse = 0.45 + 0.55 * Math.sin(time * TAU * 0.55);
-      U.uAlpha.value =
+      U.uAlpha.value = look.gain * (
         wIdle * 0.055
         + wConn * 0.070 * connPulse
         + wHear * (0.050 + 0.135 * level)
         + wThink * (0.070 + 0.090 * level)
-        + wSpeak * (0.055 + 0.185 * level);
-      U.uFuzz.value =
+        + wSpeak * (0.055 + 0.185 * level));
+      U.uFuzz.value = look.gain * (
         wIdle * 0.055
         + wConn * 0.065 * connPulse
         + wHear * (0.055 + 0.175 * level)
         + wThink * (0.070 + 0.110 * level)
-        + wSpeak * (0.060 + 0.210 * level);
+        + wSpeak * (0.060 + 0.210 * level));
     },
 
     dispose(): void {

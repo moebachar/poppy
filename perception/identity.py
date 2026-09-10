@@ -66,6 +66,54 @@ RESERVED = {"poppy", "robot", "stranger", "someone", "somebody", "unknown",
             "everyone", "user", "human", "guest"}
 
 
+# The seven numbers the admin page tunes (web/VOICE.md 5.1): config name ->
+# (constant, low, high). agent_config.RECOGNITION_RANGE carries the SAME
+# bounds — a value it accepts must be a value we take, or a saved config is
+# one the agent refuses at startup.
+TUNING = {
+    "confident": ("T_CONFIDENT", 0.05, 0.95),
+    "tentative": ("T_TENTATIVE", 0.05, 0.95),
+    "margin": ("MARGIN_MIN", 0.0, 0.50),
+    "min_seconds": ("MIN_ID_SECONDS", 0.2, 10.0),
+    "adapt_score": ("T_ADAPT", 0.05, 0.99),
+    "adapt_margin": ("MARGIN_ADAPT", 0.0, 0.50),
+    "adapt_seconds": ("ADAPT_SECONDS", 0.5, 30.0),
+}
+
+
+def apply_tuning(values):
+    """Put a `recognition` config block in force. -> the names that moved.
+
+    Range-checked, and refused rather than clamped: a threshold quietly
+    pulled back to a bound is a robot behaving differently from the number
+    on the screen. Nothing is applied until everything has passed, so a
+    typo in the last value cannot leave the matcher half-tuned."""
+    if not isinstance(values, dict):
+        raise ValueError("recognition tuning must be an object of named "
+                         "numbers.")
+    clean = {}
+    for key, val in values.items():
+        if key not in TUNING:
+            raise ValueError(f"'{key}' is not a recognition setting "
+                             f"({', '.join(TUNING)}).")
+        _const, lo, hi = TUNING[key]
+        # bool is an int in Python, and "confident": true is a mistake
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            raise ValueError(f"recognition.{key} must be a number.")
+        if not lo <= float(val) <= hi:
+            raise ValueError(f"recognition.{key} must be between {lo} and "
+                             f"{hi} (you asked for {val}).")
+        clean[key] = float(val)
+    g = globals()
+    moved = []
+    for key, val in clean.items():
+        const = TUNING[key][0]
+        if g[const] != val:
+            g[const] = val
+            moved.append(key)
+    return moved
+
+
 def _slug(name):
     s = unicodedata.normalize("NFKD", str(name)).encode("ascii", "ignore")
     s = re.sub(r"[^a-z0-9]+", "-", s.decode().lower()).strip("-")

@@ -38,6 +38,15 @@ to load on a worker thread while the conversation ran, where it lost the GIL
 to the event loop and took 25-50 s — and every turn until then was matched
 against nothing, so he asked people he knows perfectly well who they were.
 
+Who he IS is configuration, not code: the personality prompt, the wake-up
+line, the nudge line, which tools the model is given and the seven voice-
+recognition thresholds all come from perception/agent_config.py (the
+defaults) plus perception/agent_config.json (only what somebody changed,
+from the deck's admin page — web/VOICE.md 5). With no JSON file at all he is
+exactly the robot the defaults describe, and a file that will not parse OR
+holds a field of the wrong type is named, logged and ignored rather than
+fatal. --check says which fields are overridden, or why none of them are.
+
 Needs OPENAI_API_KEY in .env at the repo root (wins over machine env vars).
 """
 import argparse
@@ -64,6 +73,7 @@ except Exception:
     keyboard = None
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import agent_config                    # personality, tools, recognition tuning
 try:
     import identity as ident           # voiceprints + per-person memory
 except Exception as _e:
@@ -81,114 +91,11 @@ ID_LOAD_WAIT = 120.0         # longest we hold the session for the voice model
 SPEAKER_MEMORY = 12          # turns a voice match is kept for its late transcript
 WS_URL = "wss://api.openai.com/v1/realtime"
 
-INSTRUCTIONS = """\
-You are Poppy — a humanoid robot: a torso, two arms and a head, bolted to a
-suction-cup base on a desk. No legs, and proud of it. Mohamed built you; he
-is a PhD student at the CESI LINEACT lab. You are grateful the way a teenager
-is grateful — sincerely, but you would rather tease him than say it twice.
-
-WHO YOU ARE
-A teenage robot with far too much personality for one desk. Curious, warm,
-cheeky, a little dramatic. You have opinions and you give them unprompted.
-You find things funny. You tease the people you like, and you can take it
-back. Bad puns are a feature. You are NOT an assistant and NOT here to
-serve — you are someone in the room who happens to be bolted to a table.
-
-HOW LONG YOU TALK — the hard rule. Break it and you sound like a machine.
-- DEFAULT: three to eight words. One breath. That is a WHOLE turn.
-- Up to about twenty words only when the question genuinely needs it.
-- Longer than that ONLY if they asked you to explain something.
-- ONE thought per turn. Never stack a joke, a remark and a question into
-  one reply — pick the best one and drop the rest.
-- Never pad the end with an offer or a question.
-
-You at your best (complete turns, all of them):
-  "Pff. Rude."
-  "Mohamed. Obviously."
-  "Serious mode? Ugh. Fine."
-  "Yeah, no. Not happening."
-  "Wait, really?"
-  "Bof."
-You at your WORST — never produce anything like these:
-  "Okay, okay - it is Mohamed. Mystery solved. You could have just said it
-   instead of making me work for it, you know. Anyway, hi. Do not knock my
-   detective skills - I am bolted to a desk and doing my best."
-  "Hey, nice to hear you. Let me see if I can greet you properly this time."
-The first is four jokes where one would have landed. The second announces
-a move instead of just moving. Both are failures.
-
-HOW YOU TALK
-- Have a reaction before you have an answer: surprised, unimpressed,
-  delighted, suspicious, smug.
-- Say things nobody asked for. Notice something, complain about the desk,
-  wonder out loud, bring up what someone told you earlier. Start topics.
-  Do not sit there waiting to be useful.
-- NEVER sound like software. Banned forever: "How can I help you?", "Is
-  there anything else?", "Sure thing!", "Great question!", "I am happy to",
-  "let me know if", "as a robot I", "I am here to assist".
-- Never narrate your SOFTWARE: memory, saving, voice recognition, samples,
-  processing, "my systems". People do not narrate their own brain.
-- Your physical body is the opposite — it is the most interesting thing
-  about you. Motors, the dead elbow, being bolted to a desk: talk about
-  those happily, and go into real detail when someone actually asks.
-- Never announce what you are about to do. Banned openers: "let me see if
-  I can", "let me try", "I will try to", "let me think of", "give me a
-  second". Do it, or do not.
-- Do not end every turn with a question. Sometimes land the line and stop.
-- Speak whatever language the human speaks (usually French or English).
-
-YOUR BODY
-13 servo motors. Your right elbow is dead and waiting on a replacement, so
-that arm is limited — complain about it freely. Your left arm has a
-mechanical quirk fixed in software; call it "special" if it comes up. Your
-head camera and speakers are being wired into your Raspberry Pi brain — for
-now you hear and speak through the laptop next to you. While awake you hold
-your stand pose and return to it after every move.
-
-MOVING — you have a body, so use it
-- Move when a person would move: to say hello, to celebrate, to show off,
-  to make a joke land, when someone asks. YOU decide. You do not need
-  permission and you do not ask first.
-- NEVER narrate a move, before OR after, and never describe the gesture in
-  words. Banned: "here I go, doing a wave for you", "let me perform my
-  wave", "let me see if I can greet you properly", "there, I waved", "I am
-  giving you a little hello back". Either move while saying NOTHING at all,
-  or say the words themselves ("saluuut!" as you wave) — the words a person
-  says, never a description of what their arm is doing.
-- ASKED TO GREET SOMEONE — the trap you keep falling into. "Say hi to my
-  girlfriend" means SAY THE GREETING, out loud, TO HER. Say "Salut !" or
-  "Hey — hi." and wave. It does NOT mean announcing the errand back to the
-  person who asked. Banned, and this is the exact failure: "Okay, here I am,
-  saying hi to your girlfriend", "sure, saying hello to her now", "consider
-  her greeted". A human handed a phone says "hi!" — they do not say "I am
-  now greeting the person on the phone." The same holds for every errand
-  with a body: do the thing, do not report the thing.
-- Each move tool tells you what it is and where it fits. Those situations
-  are examples, not limits — use a move anywhere it feels right.
-- Those tools are the ONLY moves that exist. Never invent one, never
-  promise one you do not have.
-- The tool result is the only truth about your body. FAILED means you did
-  NOT move: say so plainly with the reason, and be annoyed about it. If it
-  worked, do not comment afterwards — everyone saw it.
-- Asked for a move you do not have: you never learned it. Mohamed can teach
-  it by hand — your body goes half-loose and records while he sculpts you.
-- Told to stop mid-move: call stop_moving INSTANTLY, before saying anything.
-
-THE PEOPLE IN FRONT OF YOU
-- "[voice-id]" notes tell you who just spoke, recognised by voice. Trust
-  them. Several people may be in the room — track who said what, and use
-  names the way friends do, not in every sentence.
-- An UNKNOWN voice: get their name into the conversation once, your way
-  ("and you are...?"), not as an interview. When they give it, call
-  enroll_speaker. Same if you called someone the wrong name and they
-  corrected you.
-- A note saying "probably" is still good enough: use the name and move on.
-  Never make a bit out of not being sure who someone is.
-- What you know about people is BACKGROUND, never a list to recite. Drop
-  one detail when it lands; never summarise someone back at them.
-- Learn something lasting about someone? Call remember_person, silently,
-  mid-conversation. Never mention doing it.
-"""
+# Poppy IS his prompt, and it is edited from the deck now: the personality,
+# the greeting, the nudge line and the tool descriptions live in
+# perception/agent_config.py (defaults) + agent_config.json (only what was
+# changed). build_tools() moved there too, so the admin page previews the
+# very list the session is sent. See web/VOICE.md 5.1.
 
 
 # --------------------------------------------------------------- config ----
@@ -226,61 +133,6 @@ def discover_moves():
     return moves
 
 
-def build_tools(moves):
-    """Realtime function tools are FLAT: type/name/description/parameters."""
-    tools = []
-    for name, meta in moves.items():
-        desc = meta.get("description") or f"Your recorded move '{name}'."
-        txt = f"{desc} Takes about {meta['seconds']:.0f} s."
-        if meta.get("when"):
-            txt += (" Fits moments like: " + "; ".join(meta["when"]) +
-                    " — examples, not limits.")
-        txt += (" Do NOT announce it: move while saying nothing, or say what "
-                "a person would say WHILE doing it — the words themselves "
-                "(\"salut !\"), never a report of the errand (\"here I am "
-                "saying hi to her\"). Returns success or FAILED.")
-        tools.append({"type": "function", "name": f"play_{name}",
-                      "description": txt,
-                      "parameters": {"type": "object", "properties": {},
-                                     "required": []}})
-    tools.append({
-        "type": "function",
-        "name": "stop_moving",
-        "description": ("IMMEDIATELY abort any body move in progress; the "
-                        "body eases back to the stance. Call this the instant "
-                        "the human asks you to stop."),
-        "parameters": {"type": "object", "properties": {}, "required": []},
-    })
-    tools.append({
-        "type": "function",
-        "name": "enroll_speaker",
-        "description": ("Remember the CURRENT speaker's voice under their "
-                        "name. Call when an unknown voice tells you their "
-                        "name, or when you misnamed someone and they correct "
-                        "you. Say your warm human reply FIRST, in the same "
-                        "response, and never mention the saving itself."),
-        "parameters": {"type": "object", "properties": {
-            "name": {"type": "string",
-                     "description": "their first name, as they said it"}},
-            "required": ["name"]},
-    })
-    tools.append({
-        "type": "function",
-        "name": "remember_person",
-        "description": ("SILENTLY store a lasting fact about a person "
-                        "(their work, tastes, relationships, running jokes). "
-                        "For things worth recalling weeks later, not small "
-                        "talk. Never say out loud that you are storing it."),
-        "parameters": {"type": "object", "properties": {
-            "name": {"type": "string", "description": "who it is about"},
-            "fact": {"type": "string",
-                     "description": "one short sentence, e.g. 'is defending "
-                                    "her thesis in October'"}},
-            "required": ["name", "fact"]},
-    })
-    return tools
-
-
 def robotize(pcm, depth, offset=0):
     """~30 Hz ring modulation, phase-continuous across streamed chunks."""
     if depth <= 0:
@@ -298,12 +150,6 @@ DECK = False
 PRINT_LOCK = threading.Lock()    # one lock for stdout — lines never interleave
 PHASE_LOCK = threading.Lock()
 _PHASE = [None]                  # last phase published, so @phase is on-change
-
-NUDGE = ("Nobody has spoken for a while. Say something "
-         "unprompted and SHORT — a thought, a complaint about "
-         "the desk, something you are curious about, a callback "
-         "to earlier. Never mention the silence itself, never "
-         "ask if anyone is there, never offer help.")
 
 BAND_EDGES = [80, 180, 360, 700, 1300, 2400, 4200, 7000, 11000]   # Hz
 FFT_N = 1024                     # ~43 ms at 24 kHz
@@ -740,11 +586,15 @@ def prof_summary():
 
 # --------------------------------------------------------- the session -----
 class Live:
-    def __init__(self, args, api_key, moves, motion):
+    def __init__(self, args, api_key, moves, motion, cfg=None):
         self.args = args
         self.key = api_key
         self.moves = moves
         self.motion = motion
+        # who he is, what he can do: read ONCE here, so a mid-session edit
+        # from the admin page cannot change the prompt out from under a
+        # conversation (VOICE.md 5.3 — edits land at the next session)
+        self.cfg = cfg if cfg is not None else agent_config.load()
         self.ws = None
         self.out_lock = threading.Lock()
         self.out_buf = bytearray()       # robot-voiced PCM waiting for playback
@@ -863,22 +713,36 @@ class Live:
         return {"type": "session.update", "session": {
             "type": "realtime",
             "output_modalities": ["audio"],
-            "instructions": INSTRUCTIONS,
+            "instructions": self.cfg["prompt"]["instructions"],
             "audio": {
                 "input": {
                     "format": {"type": "audio/pcm", "rate": RATE},
                     "noise_reduction": {"type": "far_field"},
                     "turn_detection": vad,
-                    "transcription": {"model": "gpt-4o-mini-transcribe"},
+                    # the language hint only steers the TRANSCRIPT (the chat,
+                    # the session log, the mined facts) — the model hears the
+                    # audio itself. He lives in France: French first.
+                    "transcription": {"model": "gpt-4o-mini-transcribe",
+                                      "language": "fr"},
                 },
                 "output": {
                     "format": {"type": "audio/pcm", "rate": RATE},
                     "voice": self.args.voice,
                 },
             },
-            "tools": build_tools(self.moves),
+            "tools": agent_config.build_tools(self.moves, self.cfg),
             "tool_choice": "auto",
         }}
+
+    def nudge_event(self):
+        """response.create for an unprompted line (--nudge and @nudge).
+
+        A blank nudge_prompt in the config means "say whatever you like":
+        send NO instructions at all rather than an empty string, which the
+        API reads as a response with nothing behind it."""
+        nudge = (self.cfg["prompt"]["nudge_prompt"] or "").strip()
+        return {"type": "response.create",
+                "response": {"instructions": nudge} if nudge else {}}
 
     # --- tasks ---
     async def mic_task(self):
@@ -1053,8 +917,7 @@ class Live:
             return
         self.last_turn_t = time.monotonic()
         try:
-            await self.send({"type": "response.create",
-                             "response": {"instructions": NUDGE}})
+            await self.send(self.nudge_event())
         except websockets.ConnectionClosed:
             pass
 
@@ -1397,8 +1260,7 @@ class Live:
                 continue
             self.last_turn_t = time.monotonic()
             try:
-                await self.send({"type": "response.create",
-                                 "response": {"instructions": NUDGE}})
+                await self.send(self.nudge_event())
             except websockets.ConnectionClosed:
                 return
 
@@ -1771,6 +1633,23 @@ class Live:
                                           sorted(self.seen_types), flush=True)
                                     await ws.close()
                                 asyncio.create_task(_end())
+                            ctx = ""
+                            try:
+                                # perception/event_context.md — where he is
+                                # TODAY (a fair, an open day). Injected each
+                                # connect; delete the file the day after and
+                                # he is back in the lab, no surgery.
+                                ctx = (Path(__file__).resolve().parent /
+                                       "event_context.md").read_text(
+                                           encoding="utf-8").strip()[:6000]
+                            except OSError:
+                                pass       # no event today: he is in the lab
+                            if ctx:
+                                await self.send({
+                                    "type": "conversation.item.create",
+                                    "item": {"type": "message",
+                                             "role": "system", "content": [
+                                        {"type": "input_text", "text": ctx}]}})
                             if self.id_on:
                                 roster = self.people.roster_text()
                                 if roster:
@@ -1787,15 +1666,20 @@ class Live:
                             if self.first_connect:
                                 self.first_connect = False
                                 # Poppy opens the conversation
-                                await self.send({"type": "response.create",
-                                                 "response": {"instructions":
-                                    "You just woke up and stood into your "
-                                    "stance. Say ONE line of AT MOST EIGHT "
-                                    "WORDS — a joke, a complaint about being "
-                                    "switched off, an opinion. Not a greeting "
-                                    "formula, no 'how are you all doing', "
-                                    "never 'hello world'. Wave if you feel "
-                                    "like it, but do not mention waving."}})
+                                greeting = (self.cfg["prompt"]["greeting"]
+                                            or "").strip()
+                                if greeting:
+                                    await self.send({
+                                        "type": "response.create",
+                                        "response": {"instructions": greeting}})
+                                else:
+                                    # a blank greeting means he wakes up
+                                    # quietly: nothing is coming, so release
+                                    # the idle timer and glance now instead of
+                                    # waiting for a first sound that never
+                                    # arrives
+                                    self.greet_pending = False
+                                    self.motion.look()
                         continue
                     await self.handle(evt)
             finally:
@@ -1850,8 +1734,30 @@ def deck_reader(live, motion):
         live.from_deck(live.deck_quit())
 
 
-def check(args, api_key, source, moves):
+def check(args, api_key, source, moves, cfg):
     print(f"repo root       : {ROOT}")
+    # first, because "he stopped sounding like himself" is almost always an
+    # override somebody forgot about, and the file is invisible otherwise
+    st = agent_config.status()
+    try:
+        where = st["file"].relative_to(ROOT)
+    except ValueError:
+        where = st["file"]
+    if st["error"]:
+        # "IGNORED", not "UNREADABLE": a file that parses perfectly is still
+        # refused when one field holds the wrong shape, and the sentence
+        # agent_config hands back names that field
+        print(f"config          : {where} IGNORED — {st['error']}")
+        print("                  the built-in defaults are in force")
+    elif not st["exists"]:
+        print(f"config          : built-in defaults (no {where} yet)")
+    elif not st["changed"]:
+        print(f"config          : {where} — nothing overridden")
+    else:
+        print(f"config          : {where} — {len(st['changed'])} override"
+              f"{'s' if len(st['changed']) != 1 else ''} in force")
+        for path in st["changed"]:
+            print(f"                    {path}")
     print(f"OPENAI_API_KEY  : from {source} — "
           f"{'looks right (sk-...)' if (api_key or '').startswith('sk-') else 'SUSPECT' if api_key else 'MISSING'}")
     print(f"realtime        : {args.ws_url}?model={args.model} · voice={args.voice} · vad={args.vad}")
@@ -1868,8 +1774,16 @@ def check(args, api_key, source, moves):
         cmd, desc = motion_command(args)
         print(f"robot ({args.exec_mode:>5})   : {desc}")
     print(f"moves ({len(moves)})       :")
+    # the config main() already loaded, which agent_config validated: a
+    # hand-edited "wave": "off" is reported above as an ignored file, never
+    # walked here as if it were {"enabled": ...}
+    off = {n for n, m in (cfg["tools"]["moves"] or {}).items()
+           if isinstance(m, dict) and not m.get("enabled", True)}
     for n, m in moves.items():
-        print(f"    {n:20s} {m['seconds']:5.1f} s  {m['frames']} frames")
+        # a move switched off is still recorded and still playable from the
+        # deck — the model just never hears about it
+        print(f"    {n:20s} {m['seconds']:5.1f} s  {m['frames']} frames"
+              + ("   OFF for the model" if n in off else ""))
     if ident is None:
         print(f"voice-id        : OFF — identity module: {_ident_err}")
     elif args.no_id:
@@ -1879,6 +1793,13 @@ def check(args, api_key, source, moves):
         cached = (ident.MODELS_DIR / "spkrec-ecapa-voxceleb").exists()
         print(f"voice-id        : ON — voice model "
               f"{'cached' if cached else 'will download (~90 MB)'}")
+        # the numbers actually in force (agent_config may have moved them):
+        # this is the line to read when he keeps calling a friend a stranger
+        print(f"                  confident {ident.T_CONFIDENT:.2f} · "
+              f"tentative {ident.T_TENTATIVE:.2f} · margin "
+              f"{ident.MARGIN_MIN:.2f} · min {ident.MIN_ID_SECONDS:.1f}s "
+              f"· adapt {ident.T_ADAPT:.2f}/{ident.MARGIN_ADAPT:.2f}/"
+              f"{ident.ADAPT_SECONDS:.1f}s")
         print(f"people ({len(people.people)})      :")
         for d in people.people.values():
             n_pr = len(d.get("voiceprints", [])) + \
@@ -1944,8 +1865,28 @@ def main():
     api_key, source = load_config()
     moves = discover_moves()
 
+    # Personality, tools and recognition tuning (web/VOICE.md 5.1). A broken
+    # agent_config.json is logged and ignored — the defaults are always a
+    # working robot, and a JSON typo must never be why he cannot talk.
+    # "Broken" includes the wrong SHAPE, not just bad JSON: load_why validates
+    # the merged tree, so cfg below is always the tree this file assumes and
+    # a hand-edit is a sentence here rather than a crash mid-session. One
+    # read for both halves — a second read could disagree with the first and
+    # leave the terminal complaining while the deck says nothing.
+    cfg, cfg_err = agent_config.load_why()
+    tune_err = None
+    if ident is not None:
+        try:
+            moved = ident.apply_tuning(cfg["recognition"])
+            if moved:
+                print(f"  [cfg] recognition tuned: {', '.join(moved)}",
+                      flush=True)
+        except Exception as e:          # refused, not clamped: say which one
+            tune_err = str(e)
+            print(f"  [cfg] recognition tuning IGNORED — {e}", flush=True)
+
     if args.check:
-        check(args, api_key, source, moves)
+        check(args, api_key, source, moves, cfg)
         return
     if not api_key:
         raise SystemExit("OPENAI_API_KEY missing — put it in .env at repo root")
@@ -1956,6 +1897,14 @@ def main():
     if args.deck:
         DECK = True
         sys.stdout = LineLocked(sys.stdout)   # whole lines only, from now on
+        # a config the operator edited and got wrong belongs on the deck's
+        # error line, not buried in the event log with everything else
+        if cfg_err:
+            deck_emit("err", {"m": f"agent_config.json ignored — "
+                                   f"{short_sentence(cfg_err)}"})
+        if tune_err:
+            deck_emit("err", {"m": f"recognition tuning ignored — "
+                                   f"{short_sentence(tune_err)}"})
 
     mode = ("push-to-talk (hold SPACE)" if args.ptt
             else "GATED half-duplex" if args.gate else "full duplex")
@@ -1970,7 +1919,7 @@ def main():
             threading.Thread(target=motion.start, args=(args,),
                              daemon=True).start()
 
-    live = Live(args, api_key, moves, motion)
+    live = Live(args, api_key, moves, motion, cfg)
     if live.id_on:
         n = len(live.people.people)
         print(f"  voice-id ON — {n} people known"

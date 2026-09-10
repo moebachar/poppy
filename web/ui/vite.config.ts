@@ -8,6 +8,7 @@ import { fileURLToPath, URL } from 'node:url'
 const harness = fileURLToPath(new URL('./holo-harness.html', import.meta.url))
 const input: Record<string, string> = {
   index: fileURLToPath(new URL('./index.html', import.meta.url)),
+  kiosk: fileURLToPath(new URL('./kiosk.html', import.meta.url)),
 }
 if (existsSync(harness)) input.harness = harness
 

@@ -163,3 +163,8 @@ thing on screen and the aura lives inside it.
 ## Files this spec governs
 `web/ui/src/styles/tokens.css`, `base.css`, `panels.css`, `voice.css`; all
 components in `web/ui/src/ui/`; the hologram module in `web/ui/src/holo/`.
+
+Not `web/ui/src/kiosk/` — the visitor's page is a different product for a
+different audience (light, rounded, sentences allowed) and has its own
+spec, `web/KIOSK.md`. The hologram module serves both: its `light` theme is
+the kiosk's, its default is this page's, and the rules above bind the default.

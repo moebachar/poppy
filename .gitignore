@@ -21,8 +21,21 @@ perception/models/
 
 # per-machine deck state: audio device indexes, duplex mode, chosen voice
 web/voice_prefs.json
+# the admin page's salted password hash, made on this machine's first run
+web/admin_auth.json
 # deleted moves, kept only so a mis-click is recoverable on THIS machine
 scripts/motion/moves/recorded/trash/
+# an agent_config.json that would not parse, kept aside before a save
+# overwrote it — a local rescue copy, never something to commit
+perception/agent_config.json.broken
+
+# the fair's source documents (21 MB of PDFs; the extracted facts live in
+# perception/agent_config.py)
+CESI/
+
+# per-install operator overrides written by the admin page (the defaults live
+# in perception/agent_config.py; only the operator's diffs are stored here)
+perception/agent_config.json
 
 # OS noise
 Thumbs.db

@@ -3,23 +3,41 @@
 // Keys: 1/2/3 = dormant/awakening/live · p = toggle pickable ·
 //       f = toggle motor 54 ok/fault · v = cycle the voice phases (a synthetic
 //       syllable train drives the aura). A slow sinusoid fakes the POS stream.
+// ?theme=light builds the kiosk's light theme on a paper page so it can be
+// tuned alone:  npx vite --open "/holo-harness.html?theme=light"
 import { createHolo } from './index';
-import type { HoloMode, HoloMotor, VoicePhase } from './index';
+import type { HoloMode, HoloMotor, HoloTheme, VoicePhase } from './index';
 import { CAL, MOTOR_IDS } from './calibration';
 
+// ?mode=live&voice=speaking&freeze=1 set the starting state, so a headless
+// screenshot (no keyboard) can land on any look the keys would reach.
+const params = new URLSearchParams(location.search);
+const theme: HoloTheme = params.get('theme') === 'light' ? 'light' : 'dark';
+// HUD colours: the deck's on black, the kiosk's ink on paper
+const HUD = theme === 'light'
+  ? { text: '#16212B', dim: '#64758A', accent: '#2B7FE8', ok: '#1FA463', fault: '#D64545', bg: '#F4F6F9' }
+  : { text: '#C9D6DD', dim: '#5C7280', accent: '#4FC3FF', ok: '#43FF9E', fault: '#FF4B3B', bg: '' };
+// both: the html file paints html AND body dark, and the body covers the page
+if (HUD.bg) {
+  document.documentElement.style.background = HUD.bg;
+  document.body.style.background = HUD.bg;
+}
+
 const canvas = document.getElementById('stage') as HTMLCanvasElement;
-const holo = createHolo(canvas);
+const holo = createHolo(canvas, { theme });
 (window as unknown as { __holo: typeof holo }).__holo = holo;   // debug probe access
 
 // ---- state --------------------------------------------------------------
-let mode: HoloMode = 'dormant';
+const MODES: HoloMode[] = ['dormant', 'awakening', 'live'];
+const VOICE: VoicePhase[] = ['off', 'connecting', 'listening', 'hearing', 'thinking', 'speaking'];
+const startMode = params.get('mode') as HoloMode | null;
+let mode: HoloMode = startMode && MODES.includes(startMode) ? startMode : 'dormant';
 let pickable = false;
-let m54ok = false;                 // the real 54 is dead — start faulted
+let m54ok = params.get('m54') === 'ok';   // the real 54 is dead — start faulted
 const picked = new Set<number>();
 let hovered: number | null = null;
 let lastEvent = '—';
-const VOICE: VoicePhase[] = ['off', 'connecting', 'listening', 'hearing', 'thinking', 'speaking'];
-let vIdx = 0;
+let vIdx = Math.max(0, VOICE.indexOf(params.get('voice') as VoicePhase));
 
 function pushMotors(): void {
   const motors: HoloMotor[] = MOTOR_IDS.map((id) => ({
@@ -36,7 +54,7 @@ const hud = document.createElement('div');
 hud.style.cssText = [
   'position:fixed', 'left:14px', 'top:12px', 'z-index:10',
   "font:11px/1.7 'IBM Plex Mono',ui-monospace,Consolas,monospace",
-  'color:#5C7280', 'letter-spacing:0.08em', 'text-transform:uppercase',
+  `color:${HUD.dim}`, 'letter-spacing:0.08em', 'text-transform:uppercase',
   'white-space:pre', 'pointer-events:none', 'user-select:none',
 ].join(';');
 document.body.appendChild(hud);
@@ -44,12 +62,12 @@ document.body.appendChild(hud);
 function drawHud(): void {
   const pickedList = picked.size > 0 ? [...picked].sort((a, b) => a - b).join(',') : '—';
   hud.innerHTML =
-    `<span style="color:#C9D6DD">POPPY/DECK · HOLO HARNESS</span>\n` +
-    `MODE <span style="color:#4FC3FF">${mode}</span>` +
-    `   PICK <span style="color:#4FC3FF">${pickable ? 'on' : 'off'}</span>` +
-    `   M54 <span style="color:${m54ok ? '#43FF9E' : '#FF4B3B'}">${m54ok ? 'ok' : 'fault'}</span>\n` +
+    `<span style="color:${HUD.text}">POPPY/DECK · HOLO HARNESS${theme === 'light' ? ' · LIGHT' : ''}</span>\n` +
+    `MODE <span style="color:${HUD.accent}">${mode}</span>` +
+    `   PICK <span style="color:${HUD.accent}">${pickable ? 'on' : 'off'}</span>` +
+    `   M54 <span style="color:${m54ok ? HUD.ok : HUD.fault}">${m54ok ? 'ok' : 'fault'}</span>\n` +
     `HOVER ${hovered === null ? '—' : hovered}   PICKED ${pickedList}\n` +
-    `VOICE <span style="color:#4FC3FF">${VOICE[vIdx]}</span>\n` +
+    `VOICE <span style="color:${HUD.accent}">${VOICE[vIdx]}</span>\n` +
     `EVENT ${lastEvent}\n` +
     `1 DORMANT · 2 AWAKEN · 3 LIVE · P PICKABLE · F M54 · V VOICE`;
 }
@@ -99,7 +117,7 @@ const AMP: Record<number, number> = {
   51: 38, 52: 24, 53: 30, 54: 0,
 };
 const t0 = performance.now();
-let frozen = false;
+let frozen = params.get('freeze') === '1';
 window.setInterval(() => {
   const t = (performance.now() - t0) / 1000;
   const pose: Record<string, number> = {};
@@ -135,4 +153,5 @@ window.addEventListener('resize', () => holo.resize());
 // the harness exists to poke the module by hand — let the console do it too
 (window as unknown as { HOLO: typeof holo }).HOLO = holo;
 pushMotors();
+if (mode !== 'dormant') holo.setMode(mode);   // ?mode= — the module starts dormant
 drawHud();

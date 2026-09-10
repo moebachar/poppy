@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+import admin                      # the admin page's gate + API (web/admin.py)
 import voicelink                  # Poppy Live supervisor (web/voicelink.py)
 
 HERE = Path(__file__).resolve().parent
@@ -45,6 +47,10 @@ SEAM_IDS = (41, 42, 44)          # multi-turn motors, see dxl_multiturn.py
 NAME_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 READY_TIMEOUT = 120
 QUIT_TIMEOUT = 8
+MAX_BODY = 256 * 1024            # the biggest honest body is a 20 000-char
+                                 # instructions patch; anything else is noise
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
+HTTP_PORT = 8000                 # the port we serve on; --http-port sets it
 
 # ---------------------------------------------------------------- runtime state
 STATE = {"power": "off", "port": None, "error": None,
@@ -545,14 +551,120 @@ async def _voice_error(request, exc):
     return JSONResponse({"error": str(exc)}, status_code=exc.code)
 
 
+@app.exception_handler(admin.AdminError)
+async def _admin_error(request, exc):
+    return JSONResponse({"error": str(exc)}, status_code=exc.code)
+
+
 @app.exception_handler(StarletteHTTPException)
 async def _http_error(request, exc):
     return JSONResponse({"error": str(exc.detail)}, status_code=exc.status_code)
 
 
-async def read_body(request):
+def _split_host(value):
+    """('host', port or None) from a Host header — IPv6 brackets included."""
+    if not value:
+        return None, None
     try:
-        body = await request.json()
+        parts = urllib.parse.urlsplit("//" + value)
+        return parts.hostname, parts.port
+    except ValueError:
+        return None, None
+
+
+def own_origin(headers):
+    """Did this request come from the deck itself? The ONE origin rule.
+
+    The deck is reached as 127.0.0.1 AND as localhost, and the operator may
+    bind another host later, so the rule is: no Origin header at all is
+    ALLOWED — curl, a script and the voice agent never send one and they are
+    not the threat — while an Origin that IS present must be one of ours
+    (127.0.0.1 / localhost / ::1 / the host this request was addressed to) on
+    the port we are serving. Anything else, and anything we cannot parse, is
+    refused: an Origin we do not understand is not ours.
+
+    This is not a substitute for the admin token; it is the layer that makes
+    the token meaningful, because a browser cannot forge or omit Origin.
+    """
+    origin = headers.get("origin")
+    if origin is None:
+        return True
+    host, host_port = _split_host(headers.get("host"))
+    try:
+        parts = urllib.parse.urlsplit(origin)
+        o_host, o_port = parts.hostname, parts.port
+    except ValueError:
+        return False                     # a port that is not a number, an
+                                         # unclosed IPv6 bracket
+    if parts.scheme not in ("http", "https") or not o_host:
+        return False                     # "null" (a sandboxed frame, file://),
+                                         # an extension, anything with no host
+    if o_port is None:
+        o_port = 443 if parts.scheme == "https" else 80
+    # the port this request was actually addressed to is the authority — the
+    # browser fills Host in with where it connected, and it is the port we are
+    # therefore serving on. HTTP_PORT only stands in when Host carries none.
+    # Another app of the operator's on another port is a DIFFERENT origin.
+    if o_port != (host_port if host_port is not None else HTTP_PORT):
+        return False
+    if o_host in LOCAL_HOSTS:
+        return True
+    return host is not None and o_host == host
+
+
+@app.middleware("http")
+async def api_gate(request: Request, call_next):
+    """Two rules, before routing: same-origin on writes, token on the gated.
+
+    Before routing deliberately: one rule in one place cannot be bypassed by
+    a route somebody adds later and forgets to gate, and a path that reaches
+    no route at all is refused just the same.
+
+    Every POST here changes something real — the body moves, a paid session
+    starts, a voiceprint is written, the tool description the model reads is
+    rewritten — and none of them needs a preflight (a text/plain POST is a
+    "simple request"), so any page the operator visits could fire them blind.
+    The GET routes need no such check: with no CORS headers on the answer, a
+    page can send the request but never read the reply.
+
+    The token is a soft gate on a localhost dashboard (VOICE.md 5.2) — but the
+    voiceprints, the transcripts and the personal facts behind it are exactly
+    what it is there for.
+    """
+    if request.method not in ("GET", "HEAD", "OPTIONS") \
+            and not own_origin(request.headers):
+        return JSONResponse(
+            {"error": "that request did not come from this deck"},
+            status_code=403)
+    if admin.gated(request.url.path):
+        why = admin.token_error(request.headers.get("x-admin-token"))
+        if why:
+            return JSONResponse({"error": why}, status_code=401)
+    return await call_next(request)
+
+
+async def read_body(request):
+    """The request's JSON object, refused before we buffer anything absurd.
+
+    request.json() reads the whole body first, so an unauthenticated POST of a
+    1 GB body was a 1 GB spike in the bridge. Cap it on the way in instead.
+    """
+    too_big = f"that request body is too big — {MAX_BODY} bytes at most"
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) > MAX_BODY:
+                raise BridgeError(413, too_big)
+        except ValueError:
+            raise BridgeError(400, "bad Content-Length")
+    chunks, size = [], 0
+    async for chunk in request.stream():   # a chunked body declares no length
+        size += len(chunk)
+        if size > MAX_BODY:
+            raise BridgeError(413, too_big)
+        chunks.append(chunk)
+    try:
+        body = json.loads(b"".join(chunks).decode("utf-8"))
     except Exception:
         raise BridgeError(400, "request body must be JSON")
     if not isinstance(body, dict):
@@ -845,8 +957,62 @@ async def api_session(file: str):
     return await asyncio.to_thread(voicelink.session_rows, file)
 
 
+# -------------------------------------------------------------------- admin
+# The gate and the agent configuration (VOICE.md 5.3). admin.py owns every
+# rule behind these; the token was already checked by api_gate() above.
+@app.post("/api/admin/login")
+async def api_admin_login(request: Request):
+    body = await read_body(request)
+    # on a thread: a refusal sits on a fixed 250 ms delay, and the loop is
+    # fanning 30 level messages a second out to the decks meanwhile. The
+    # client host keys the attempt counter — 40 of these threads may be
+    # sleeping at once, so the delay alone never was a limit (VOICE.md 5.2).
+    host = request.client.host if request.client else None
+    return await asyncio.to_thread(admin.login, body, host)
+
+
+@app.post("/api/admin/password")
+async def api_admin_password(request: Request):
+    body = await read_body(request)
+    token = request.headers.get("x-admin-token")
+    return await asyncio.to_thread(admin.change_password, body, token)
+
+
+@app.get("/api/admin/config")
+async def api_admin_config():
+    return await asyncio.to_thread(admin.config_doc)
+
+
+@app.post("/api/admin/config")
+async def api_admin_config_set(request: Request):
+    body = await read_body(request)
+    return await asyncio.to_thread(admin.config_set, body)
+
+
+@app.post("/api/admin/config/reset")
+async def api_admin_config_reset(request: Request):
+    body = await read_body(request)
+    return await asyncio.to_thread(admin.config_reset, body)
+
+
+@app.get("/api/admin/preview")
+async def api_admin_preview():
+    return await asyncio.to_thread(admin.preview)
+
+
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
+    # The one route that hands a browser its data back. WebSockets are exempt
+    # from CORS: any page the operator opens may connect to ws://127.0.0.1
+    # and it READS every frame — the hello state, and then every {"t":"chat"}
+    # row, speaker names and words included. The GET routes need no origin
+    # check because a cross-origin page can send the request but never read
+    # the answer; this pipe is read directly, so it is checked here, and the
+    # middleware above cannot do it (BaseHTTPMiddleware never sees a websocket
+    # scope). Refuse BEFORE accept(), so nothing is ever sent.
+    if not own_origin(websocket.headers):
+        await websocket.close(code=1008)   # policy violation
+        return
     await websocket.accept()
     CLIENTS.add(websocket)
     try:
@@ -895,8 +1061,9 @@ def main():
                     help="serial port of the USB2AX (default: auto-detect)")
     ap.add_argument("--http-port", type=int, default=8000)
     args = ap.parse_args()
-    global FORCED_PORT
+    global FORCED_PORT, HTTP_PORT
     FORCED_PORT = args.robot_port
+    HTTP_PORT = args.http_port       # own_origin() compares against this
     current_port()
     print(f"POPPY/DECK bridge — robot port {STATE['port'] or 'NOT FOUND'} — "
           f"http://127.0.0.1:{args.http_port}", flush=True)

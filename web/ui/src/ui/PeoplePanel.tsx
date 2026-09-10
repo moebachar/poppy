@@ -1,5 +1,5 @@
-// VOICE.md §4.4 — who Poppy knows: the roster, the guided enrolment, and the
-// read-only session log.
+// VOICE.md §4.4 — who Poppy knows: the roster and the guided enrolment. Lives
+// on the admin page since §5.4; the session browser is its own section there.
 import { useEffect, useState } from 'react'
 import {
   apiAddFact,
@@ -10,27 +10,14 @@ import {
   apiEnrollStart,
   apiForgetPerson,
   apiRenamePerson,
-  apiSession,
-  apiSessions,
   refreshPeople,
 } from '../api'
 import { useStore } from '../state'
-import type {
-  EnrollState,
-  Person,
-  SessionInfo,
-  SessionRow,
-  VoiceState,
-} from '../types'
+import type { EnrollState, Person, VoiceState } from '../types'
+import { fmtWhen } from './admin/bits'
 import { LevelStrip } from './VoicePanel'
 
 const CLIP_SECONDS = 8
-
-/** "2026-08-21 10:53" -> "21/08 10:53" */
-function fmtWhen(s: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}:\d{2})/.exec(s)
-  return m ? `${m[3]}/${m[2]} ${m[4]}` : s
-}
 
 function PersonBlock({ p }: { p: Person }) {
   const [renaming, setRenaming] = useState(false)
@@ -334,64 +321,6 @@ function Enrol() {
   )
 }
 
-function Sessions() {
-  const live = useStore((s) => s.voice?.on === true)
-  const [list, setList] = useState<SessionInfo[]>([])
-  const [open, setOpen] = useState<string | null>(null)
-  const [rows, setRows] = useState<SessionRow[]>([])
-
-  // Refresh on mount and whenever a session ends — that is when a new file
-  // appears on disk.
-  useEffect(() => {
-    apiSessions()
-      .then(setList)
-      .catch(() => {})
-  }, [live])
-
-  const pick = (file: string) => {
-    if (open === file) {
-      setOpen(null)
-      return
-    }
-    setOpen(file)
-    setRows([])
-    apiSession(file)
-      .then((r) => setRows(r.rows))
-      .catch(() => setOpen(null))
-  }
-
-  return (
-    <div className="pp-sessions">
-      <div className="panel-label">SESSIONS</div>
-      {list.length === 0 && <div className="v-empty">EMPTY</div>}
-      {list.map((s) => (
-        <div key={s.file}>
-          <button
-            type="button"
-            className={`pp-srow${open === s.file ? ' on' : ''}`}
-            onClick={() => pick(s.file)}
-          >
-            <span className="pp-swhen">{fmtWhen(s.when)}</span>
-            <span className="pp-slines">{s.lines} lines</span>
-            <span className="pp-swho">{s.who.join(', ')}</span>
-          </button>
-          {open === s.file && (
-            <div className="pp-stranscript">
-              {rows.map((r, i) => (
-                <div key={i} className="v-row">
-                  <span className="v-ts">{r.t}</span>
-                  <span className="v-who">{r.who.toUpperCase()}</span>
-                  <span className="v-text">{r.text}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  )
-}
-
 export default function PeoplePanel() {
   const people = useStore((s) => s.people)
 
@@ -407,7 +336,6 @@ export default function PeoplePanel() {
           <PersonBlock key={p.slug} p={p} />
         ))}
         <Enrol />
-        <Sessions />
       </div>
     </section>
   )

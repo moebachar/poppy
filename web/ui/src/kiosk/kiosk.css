@@ -1,0 +1,397 @@
+/* KIOSK.md §3.1 — the whole visual layer of the kiosk. Light only: this page
+   is paper, and the hologram's light theme is ink drawn on it. */
+
+:root {
+  --bg: #F4F6F9;
+  --panel: #FFFFFF;
+  --rule: #E2E8EF;
+  --rule-hi: #C9D4E0;
+  --ink: #16212B;
+  --ink-dim: #64758A;
+  --accent: #2B7FE8;
+  --accent-ink: #1C5FB8;
+  --ok: #1FA463;
+  --fault: #D64545;
+  --warn: #D9822B;
+  --poppy: #EAF3FD;
+  --font: 'Space Grotesk', system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --radius: 12px;
+}
+
+/* ---- reset ------------------------------------------------------------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+/* Read from a metre away: 15px base, and the page itself never scrolls. */
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.4;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+/* ---- grid -------------------------------------------------------------- */
+
+.kiosk {
+  display: grid;
+  grid-template-columns: 1fr 420px;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.stage {
+  position: relative;
+  background: var(--bg);
+  min-width: 0;
+  min-height: 0;
+}
+
+.holo-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.stage-hint {
+  position: absolute;
+  left: 16px;
+  bottom: 12px;
+  font-size: 12px;
+  color: var(--ink-dim);
+  pointer-events: none;
+  user-select: none;
+}
+
+.column {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  min-width: 360px;
+  min-height: 0;
+  background: var(--panel);
+  border-left: 1px solid var(--rule);
+}
+
+/* A tablet held upright: the column goes under the stage. */
+@media (max-width: 900px) {
+  .kiosk {
+    grid-template-columns: 1fr;
+    grid-template-rows: 55vh 1fr;
+  }
+  .column {
+    min-width: 0;
+    border-left: 0;
+    border-top: 1px solid var(--rule);
+  }
+}
+
+/* ---- header ------------------------------------------------------------ */
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--rule);
+}
+
+/* The lab's logo: top-left over the stage, big enough to be read from the
+   door. It never takes the pointer — the wheel underneath still orbits him. */
+.stage-logo {
+  position: absolute;
+  left: 24px;
+  top: 20px;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* The file is the mark itself, cropped to its edges with the white knocked
+   out (no padding to swallow the height): 80 px tall reads across the room. */
+.logo {
+  display: block;
+  height: 80px;
+  width: auto;
+  max-width: 360px;
+  object-fit: contain;
+}
+
+.logo.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 80px;
+  height: 80px;
+  border: 1px solid var(--rule-hi);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--ink-dim);
+}
+
+@media (max-width: 900px) {
+  .stage-logo {
+    left: 16px;
+    top: 12px;
+  }
+  .logo,
+  .logo.placeholder {
+    height: 64px;
+  }
+  .logo.placeholder {
+    width: 64px;
+  }
+}
+
+.title {
+  min-width: 0;
+}
+
+.wordmark {
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.status .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.status.tone-dim { color: var(--ink-dim); }
+.status.tone-ok { color: var(--ok); }
+.status.tone-warn { color: var(--warn); }
+.status.tone-fault { color: var(--fault); }
+.status.tone-accent { color: var(--accent-ink); }
+
+.status.pulse .dot {
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+.status-detail {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--ink-dim);
+  overflow-wrap: anywhere;
+}
+
+/* ---- chat -------------------------------------------------------------- */
+
+.chat {
+  overflow-y: auto;
+  min-height: 0;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.empty {
+  margin: auto;
+  text-align: center;
+  color: var(--ink-dim);
+}
+
+.run {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 85%;
+}
+
+.run.say { align-self: flex-start; }
+.run.heard { align-self: flex-end; align-items: flex-end; }
+
+.cap {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-dim);
+  padding: 0 4px;
+}
+
+.bubble {
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.run.say .bubble {
+  background: var(--poppy);
+}
+
+.run.heard .bubble {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+}
+
+.ts {
+  align-self: flex-end;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-dim);
+  padding: 0 4px;
+}
+
+.chip,
+.note {
+  align-self: center;
+  text-align: center;
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+
+.chip {
+  padding: 3px 10px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.chip.failed {
+  color: var(--fault);
+}
+
+/* ---- controls ---------------------------------------------------------- */
+
+.controls {
+  border-top: 1px solid var(--rule);
+  padding: 12px 16px 16px;
+}
+
+/* The strip keeps its height when empty so the buttons never jump. */
+.toast {
+  min-height: 20px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: var(--fault);
+  text-align: center;
+  opacity: 0;
+  transition: opacity 0.2s;
+  overflow-wrap: anywhere;
+}
+
+.toast.show {
+  opacity: 1;
+}
+
+/* Hold-to-talk: only while the live session is push-to-talk. Full width and
+   tall — it is pressed with a thumb, from a metre away. */
+.ptt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 100%;
+  height: 60px;
+  margin-bottom: 10px;
+  padding: 0;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  color: var(--accent-ink);
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 500;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.ptt.held {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #FFFFFF;
+}
+
+.ptt-hint {
+  font-size: 12px;
+  font-weight: 400;
+  opacity: 0.8;
+}
+
+.buttons {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 64px;
+  padding: 0;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--rule-hi);
+}
+
+.btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #FFFFFF;
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.btn .icon {
+  display: flex;
+  line-height: 0;
+}
+
+.btn .label {
+  line-height: 1;
+}

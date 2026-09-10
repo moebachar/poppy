@@ -11,6 +11,12 @@ also usable by hand):
     play <name>   -> PLAY_START <name> ... PLAY_DONE <name> <secs>
                      or PLAY_FAIL <name> <reason>   (returns to stance after)
     look          -> head glances left/right (wake-up gesture), LOOK_DONE
+    talk_on / talk_off -> accepted and IGNORED (kept for bridge compat;
+                     the continuous talking sway was retired)
+    gesture_idle  -> a scripted ~7 s idle routine (silent): look left and
+                     right, a small lift of the hands, then a glide back to
+                     exactly the stand pose; any real command preempts it,
+                     'stop' cuts it straight to the glide home
     stop          -> aborts the current play immediately (out-of-band)
     hold          -> re-stiffen into the stance (after a release)
     release       -> go soft but keep serving
@@ -53,6 +59,21 @@ REC_HZ = 20.0           # frames stored per second (07_record_replay's format)
 FOLLOW_HZ = 40.0        # goal-follows-hand rate: 2x REC_HZ halves the error
                         # the hand has to fight between ticks
 EXPECTED_IDS = [33, 34, 35, 36, 37, 41, 42, 43, 44, 51, 52, 53, 54]  # 00_read_only's map
+
+SPEED_MIN, SPEED_MAX = 8, 50
+DEG_PER_SPEED = 0.684   # one moving_speed unit ~ 0.114 rpm ~ 0.684 deg/s
+MAX_OFF_STANCE = 30.0   # refuse the routine if the body is not near stance
+# The idle routine: look left, look right, lift the hands a touch, then
+# glide back to the stand pose. Offsets are degrees FROM THE STANCE; each
+# step is (glide_seconds, hold_seconds, {joint: offset}). A final all-zeros
+# step is appended automatically, so the routine ALWAYS ends exactly on the
+# stance. 54 (dead elbow) is never in body.present, so it never appears.
+IDLE_ANIM = (
+    (1.2, 0.4, {36: 18.0, 37: -3.0}),
+    (1.8, 0.4, {36: -18.0}),
+    (1.2, 0.3, {36: 0.0, 41: 7.0, 51: 7.0, 44: 9.0, 43: 5.0, 53: 5.0}),
+)
+IDLE_RETURN = 1.5       # seconds of the final glide home
 
 PRINT_LOCK = threading.Lock()   # one lock for stdout — lines never interleave
 BUS_GATE = threading.Lock()     # held by play/record ticks; telemetry yields to it
@@ -160,6 +181,126 @@ def head_look(body, stance):
         body.dxl.set_goal_position({pan: tgt})
         time.sleep(pause)
     body.dxl.set_moving_speed({pan: 20})
+
+
+class Gestures:
+    """One small scripted routine on demand — nothing continuous.
+
+    gesture_idle: look left, look right, lift the hands a touch, then glide
+    back EXACTLY onto the stand pose (IDLE_ANIM plus the appended
+    return-home step). Runs from the main loop's idle tick, so it can never
+    overlap a play, a record or a travel — those run inline on the same
+    thread, and any queued command preempts it within one tick. One goal
+    write per joint per step, moving_speed sized to the glide, all writes
+    behind a non-blocking BUS_GATE. The continuous talking sway was
+    retired: an error mid-sway could strand the body off-stance — this
+    routine instead refuses to start far from the stance, and parks back
+    on it even when a step fails.
+    """
+
+    def __init__(self, body, stance, stop_event):
+        self.body = body
+        self.stance = stance
+        self.stop_event = stop_event
+        self.steps = None         # the running routine, or None
+        self.n = 0
+        self.step_t0 = 0.0
+        self.written = False
+        self.origin = None        # rebased stance for the gestured joints
+        self.at = {}              # last commanded target per joint
+
+    def wants(self):
+        """Does the main loop need fast idle ticks right now?"""
+        return self.steps is not None
+
+    def one_shot(self):
+        if self.steps is not None:
+            return                # already running
+        ids = sorted({i for _, _, offs in IDLE_ANIM for i in offs})
+        steps = [(g, h, dict(offs)) for g, h, offs in IDLE_ANIM]
+        steps.append((IDLE_RETURN, 0.0, {i: 0.0 for i in ids}))
+        self.steps = steps
+        self.n = 0
+        self.written = False
+        self.origin = None
+
+    def go_home(self):
+        """Cut the routine short: keep only the glide back to the stance."""
+        if self.steps is not None and self.n < len(self.steps) - 1:
+            self.steps = self.steps[-1:]
+            self.n = 0
+            self.written = False
+
+    def suspend(self):
+        """A real motion takes over (play/hold/look/release/record): each
+        establishes its own pose, so just forget the routine."""
+        self.steps = None
+        self.origin = None
+
+    def glide(self, i, target, seconds):
+        """One smooth travel: moving_speed sized to arrive in `seconds`."""
+        dist = abs(target - self.at.get(i, target))
+        speed = int(max(SPEED_MIN, min(SPEED_MAX,
+                                       dist / max(seconds, 0.1)
+                                       / DEG_PER_SPEED)))
+        self.body.dxl.set_moving_speed({i: speed})
+        self.body.set_goal(i, target)
+        self.at[i] = target
+
+    def tick(self):
+        if self.steps is None:
+            return
+        body = self.body
+        if not body.holding:
+            self.suspend()        # released: hold/restance re-poses him
+            return
+        if self.stop_event.is_set():
+            self.stop_event.clear()
+            self.go_home()        # 'stop' cuts straight to the glide home
+        now = time.time()
+        if not BUS_GATE.acquire(blocking=False):
+            return                # bus busy: try again next tick
+        try:
+            if self.origin is None:
+                ids = sorted({i for _, _, offs in self.steps for i in offs}
+                             & set(body.present))
+                cur = body.positions(ids)
+                origin = {}
+                for i in ids:
+                    tgt = self.stance.get(i, cur[i])
+                    if i in SEAM_IDS:
+                        tgt = rebase(tgt, cur[i])
+                    if abs(tgt - cur[i]) > MAX_OFF_STANCE:
+                        out(f"# gesture skipped: motor {i} is "
+                            f"{abs(tgt - cur[i]):.0f} deg off the stance")
+                        self.suspend()
+                        return
+                    origin[i] = tgt
+                self.origin = origin
+                self.at = dict(cur)
+            glide_s, hold_s, offs = self.steps[self.n]
+            if not self.written:
+                for i, off in offs.items():
+                    if i in self.origin:
+                        self.glide(i, self.origin[i] + off, glide_s)
+                self.written = True
+                self.step_t0 = now
+            elif now >= self.step_t0 + glide_s + hold_s:
+                self.n += 1
+                self.written = False
+                if self.n >= len(self.steps):
+                    self.suspend()   # ended ON the stance by construction
+        except Exception as e:
+            try:                  # best effort: park him on the stance,
+                for i, v in (self.origin or {}).items():   # never mid-pose
+                    self.body.dxl.set_moving_speed({i: 20})
+                    body.set_goal(i, v)
+            except Exception:
+                pass
+            self.suspend()
+            out(f"# gesture aborted: {e}")
+        finally:
+            BUS_GATE.release()
 
 
 def telemetry(body):
@@ -361,6 +502,8 @@ def record_loop(body, loose, cmds, stance, max_settle):
                 out("LOOK_FAIL recording")
             elif cmd == "hold":
                 out("HOLD_FAIL recording")
+            elif cmd in ("talk_on", "talk_off", "gesture_idle"):
+                pass                       # no body language while teaching
             else:
                 out(f"# unknown command: {cmd}")
         time.sleep(max(0, period - (time.time() - tick)))
@@ -494,9 +637,10 @@ def main():
             out(f"READY {len(present)} motors, holding '{args.pose}'")
             last_temp = time.time()
             released_hot = False
+            gest = Gestures(body, stance, stop_event)
             while True:
                 try:
-                    cmd = cmds.get(timeout=2)
+                    cmd = cmds.get(timeout=0.1 if gest.wants() else 2)
                 except queue.Empty:
                     cmd = None
                 if time.time() - last_temp > 3:
@@ -512,16 +656,19 @@ def main():
                         released_hot = False
                         out(f"HOLDING (cooled to {t_now} C, back at stance)")
                 if cmd is None:
+                    gest.tick()
                     continue
                 if cmd in ("quit", "exit"):
                     break
                 if cmd == "status":
                     out(f"STATUS holding={body.holding} maxtemp={body.max_temp()}")
                 elif cmd == "release":
+                    gest.suspend()
                     body.release()
                     released_hot = False
                     out("RELEASED")
                 elif cmd == "hold":
+                    gest.suspend()
                     restance(body, stance, args.max_settle)
                     released_hot = False
                     out(f"HOLDING '{args.pose}'")
@@ -529,6 +676,7 @@ def main():
                     if not body.holding:
                         out("LOOK_FAIL body is released")
                         continue
+                    gest.suspend()
                     try:
                         head_look(body, stance)
                         out("LOOK_DONE")
@@ -541,6 +689,7 @@ def main():
                             f"'release') — needs 'hold' first")
                         continue
                     out(f"PLAY_START {name}")
+                    gest.suspend()
                     stop_event.clear()
                     body.set_torque(100)   # full strength for the move
                     t0 = time.time()
@@ -570,6 +719,7 @@ def main():
                     if not body.holding:
                         out("RECORD_FAIL body is released — needs 'hold' first")
                         continue
+                    gest.suspend()
                     try:
                         raw = json.loads(cmd[12:].strip() or "{}")
                         loose = {int(k): float(v) for k, v in raw.items()}
@@ -597,6 +747,12 @@ def main():
                         released_hot = False
                     elif res == "quit":
                         break
+                elif cmd in ("talk_on", "talk_off"):
+                    pass                   # retired; accepted for compat
+                elif cmd == "gesture_idle":
+                    if body.holding:
+                        out("# gesture")
+                        gest.one_shot()
                 elif cmd.split(None, 1)[0] in ("record_stop", "record_abort"):
                     out("RECORD_FAIL not recording")
                 else:

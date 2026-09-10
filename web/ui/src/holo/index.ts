@@ -9,11 +9,13 @@ import { CAL } from './calibration';
 import { buildRobot } from './robot';
 import { createAura } from './aura';
 import type { HoloVoice, VoiceAura } from './aura';
-import { makeSharedMats, disposeSharedMats, PALETTE } from './materials';
+import { makeSharedMats, disposeSharedMats, PALETTES } from './materials';
+import type { HoloTheme } from './materials';
 import { clamp, clamp01, easeInOutCubic, easeOutQuart, lerp, smoothDampTo } from './easing';
 
 export { CAL } from './calibration';
 export type { HoloVoice, VoicePhase } from './aura';
+export type { HoloTheme } from './materials';
 
 export type HoloMode = 'dormant' | 'awakening' | 'live';
 export interface HoloMotor { id: number; ok: boolean; present: boolean;
@@ -54,9 +56,31 @@ const POSE_TAU = 0.12;              // live pose smoothing, critically damped
 
 type Phase = 'dormant' | 'awaken' | 'live' | 'sleep' | 'wakefast';
 
+// updateLook() opacity ranges, dormant -> live. Dark is the deck's, verbatim;
+// light is ink on paper, so the lines carry the drawing and the fill is faint.
+interface Look { fill: [number, number]; edge: [number, number];
+                 rim: [number, number]; accent: [number, number]; grid: number; }
+const LOOKS: Record<HoloTheme, Look> = {
+  dark: { fill: [0.032, 0.040], edge: [0.30, 0.45], rim: [0.010, 0.020], accent: [0.25, 0.5], grid: 0.3 },
+  light: { fill: [0.13, 0.17], edge: [0.48, 0.66], rim: [0.09, 0.15], accent: [0.55, 0.85], grid: 0.35 },
+};
+
+export interface HoloOptions {
+  /** 'dark' (default) is the deck's stage; 'light' the kiosk's paper (KIOSK.md §2). */
+  theme?: HoloTheme;
+  /** Keep the printed parts below a dead motor on screen. The deck hides them
+   *  (a dead motor cannot move its limb — do not show what cannot act); the
+   *  kiosk shows a visitor the whole robot and lets the marker tell the truth. */
+  keepDeadParts?: boolean;
+}
+
 interface JointState { target: number; from: number; v: number; vel: number; }
 
-export function createHolo(canvas: HTMLCanvasElement): Holo {
+export function createHolo(canvas: HTMLCanvasElement, opts: HoloOptions = {}): Holo {
+  const theme: HoloTheme = opts.theme ?? 'dark';
+  const palette = PALETTES[theme];
+  const look = LOOKS[theme];
+
   // ---- renderer / scene -------------------------------------------------
   const renderer = new THREE.WebGLRenderer({
     canvas, alpha: true, antialias: true, powerPreference: 'high-performance',
@@ -77,8 +101,10 @@ export function createHolo(canvas: HTMLCanvasElement): Holo {
   camera.lookAt(CAM_LOOK);
   let view: keyof typeof CAMS = 'front';
 
-  const mats = makeSharedMats();
+  const mats = makeSharedMats(theme);
   const robot = buildRobot(mats);
+  // robot.ts builds its markers dark (it is the deck's file); re-skin after
+  if (theme !== 'dark') for (const m of robot.markers.values()) m.setTheme(theme);
 
   // rig carries translate/scale; spin carries the turntable rotation
   const rig = new THREE.Group();
@@ -88,7 +114,7 @@ export function createHolo(canvas: HTMLCanvasElement): Holo {
   scene.add(rig);       // fixed center of its pane — the hologram never travels
 
   // ground grid, 12x12, live mode only
-  const grid = new THREE.GridHelper(1.44, 12, PALETTE.gridCenter, PALETTE.gridLine);
+  const grid = new THREE.GridHelper(1.44, 12, palette.gridCenter, palette.gridLine);
   grid.position.y = 0.001;
   const gridMat = grid.material as THREE.LineBasicMaterial;
   gridMat.transparent = true;
@@ -98,13 +124,21 @@ export function createHolo(canvas: HTMLCanvasElement): Holo {
   scene.add(grid);
 
   // ---- post: restrained bloom ------------------------------------------
-  const composer = new EffectComposer(renderer);
-  const renderPass = new RenderPass(scene, camera);
-  const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.55, 0.35, 0.2);
-  const output = new OutputPass();
-  composer.addPass(renderPass);
-  composer.addPass(bloom);
-  composer.addPass(output);
+  // Dark only. Bloom on a light page is a wash, so the light stage renders
+  // straight and there is no composer to size or dispose.
+  interface Post { composer: EffectComposer; renderPass: RenderPass;
+                   bloom: UnrealBloomPass; output: OutputPass; }
+  let post: Post | null = null;
+  if (theme === 'dark') {
+    const composer = new EffectComposer(renderer);
+    const renderPass = new RenderPass(scene, camera);
+    const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.55, 0.35, 0.2);
+    const output = new OutputPass();
+    composer.addPass(renderPass);
+    composer.addPass(bloom);
+    composer.addPass(output);
+    post = { composer, renderPass, bloom, output };
+  }
 
   // ---- state ------------------------------------------------------------
   let phase: Phase = 'dormant';
@@ -305,14 +339,14 @@ export function createHolo(canvas: HTMLCanvasElement): Holo {
   }
 
   function updateLook(): void {
-    mats.fill.opacity = lerp(0.032, 0.040, glow);
+    mats.fill.opacity = lerp(look.fill[0], look.fill[1], glow);
     mats.fillZ.opacity = mats.fill.opacity;
-    mats.edge.opacity = lerp(0.30, 0.45, glow);
-    mats.rim.opacity = lerp(0.010, 0.020, glow);
-    mats.accent.opacity = lerp(0.25, 0.5, glow);
+    mats.edge.opacity = lerp(look.edge[0], look.edge[1], glow);
+    mats.rim.opacity = lerp(look.rim[0], look.rim[1], glow);
+    mats.accent.opacity = lerp(look.accent[0], look.accent[1], glow);
     // the screen itself brightens when he talks — that is the "shining"
-    bloom.strength = lerp(0.35, 0.42, glow) + (aura ? 0.12 * aura.energy : 0);
-    gridMat.opacity = 0.3 * glow;
+    if (post) post.bloom.strength = lerp(0.35, 0.42, glow) + (aura ? 0.12 * aura.energy : 0);
+    gridMat.opacity = look.grid * glow;
     grid.visible = glow > 0.01;
   }
 
@@ -344,7 +378,8 @@ export function createHolo(canvas: HTMLCanvasElement): Holo {
     }
     updateLook();
     updateMarkers(dt);
-    composer.render();
+    if (post) post.composer.render();
+    else renderer.render(scene, camera);
   }
   function tick(): void {
     if (disposed) return;
@@ -365,8 +400,10 @@ export function createHolo(canvas: HTMLCanvasElement): Holo {
     if (aura) aura.setPixelRatio(dpr);
     renderer.setPixelRatio(dpr);
     renderer.setSize(w, h, false);
-    composer.setPixelRatio(dpr);
-    composer.setSize(w, h);
+    if (post) {
+      post.composer.setPixelRatio(dpr);
+      post.composer.setSize(w, h);
+    }
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
   }
@@ -401,6 +438,7 @@ export function createHolo(canvas: HTMLCanvasElement): Holo {
       }
       // a dead motor can't move its limb — don't show what can't act.
       // (only once the bus is known; an all-absent offline list keeps the body)
+      if (opts.keepDeadParts) return;          // the kiosk: whole, always
       const anyPresent = list.some((m) => m.present);
       const deadNodes = anyPresent
         ? list.filter((m) => !m.present || !m.ok)
@@ -459,7 +497,7 @@ export function createHolo(canvas: HTMLCanvasElement): Holo {
         return;
       }
       if (!aura) {
-        aura = createAura();
+        aura = createAura(theme);
         aura.setPixelRatio(dpr);
         rig.add(aura.group);
       }
@@ -487,10 +525,12 @@ export function createHolo(canvas: HTMLCanvasElement): Holo {
       grid.geometry.dispose();
       gridMat.dispose();
       disposeSharedMats(mats);
-      bloom.dispose();
-      output.dispose();
-      renderPass.dispose();
-      composer.dispose();
+      if (post) {
+        post.bloom.dispose();
+        post.output.dispose();
+        post.renderPass.dispose();
+        post.composer.dispose();
+      }
       renderer.dispose();
     },
   };

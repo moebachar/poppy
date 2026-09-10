@@ -1,32 +1,18 @@
 // VOICE.md §4.3 — the live conversation: status strip, transcript, level
-// meter, keys, and the inline CONFIG block.
+// meter and the action keys. The CONFIG block moved to the admin page (§5.4),
+// which is now the one place any of Poppy's settings are edited.
 import { useEffect, useRef, useState } from 'react'
-import {
-  apiAudioDevices,
-  apiVoiceCmd,
-  apiVoicePtt,
-  apiVoiceSet,
-  apiVoiceTag,
-} from '../api'
+import { apiVoiceCmd, apiVoicePtt, apiVoiceSet, apiVoiceTag } from '../api'
 import { readLevels } from '../audioBus'
+import { DEFAULT_PTT_KEY, isPttKey, pttKeyLabel } from '../pttKey'
 import { useStore } from '../state'
-import type {
-  AudioDevices,
-  ChatRow,
-  VoiceDuplex,
-  VoicePrefs,
-  VoiceState,
-} from '../types'
-import { REALTIME_MODELS, REALTIME_VOICES } from '../types'
+import type { ChatRow, VoiceDuplex } from '../types'
 
 const SEGS = 7
 
 /** Fast attack, slow release — the agent sends the raw envelope. */
 const ATTACK = 0.55
 const RELEASE = 0.14
-
-/** A range input moves on these too, not just the arrows. */
-const SLIDER_KEYS = /^(Arrow|Page|Home|End)/
 
 /** Two of these are the meter; the enrolment flow borrows the mic one. */
 export function LevelStrip({ label, pick }: { label: string; pick: 'in' | 'out' }) {
@@ -140,6 +126,8 @@ function Transcript() {
 function Ptt() {
   const [held, setHeld] = useState(false)
   const heldRef = useRef(false)
+  // SPEECH › PTT KEY on the admin page; the same key drives the kiosk's bar
+  const code = useStore((s) => s.voice?.ptt_key ?? DEFAULT_PTT_KEY)
 
   const set = (down: boolean) => {
     if (heldRef.current === down) return
@@ -148,20 +136,20 @@ function Ptt() {
     apiVoicePtt(down).catch(() => {})
   }
 
-  // 'V' held = the same key. Space belongs to STOP; do not touch it.
+  // The configured key held = the same button. Space belongs to STOP and is
+  // never offered as a choice; do not touch it.
   useEffect(() => {
     const inField = (t: EventTarget | null) => {
       const el = t as HTMLElement | null
       return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')
     }
     const kd = (e: KeyboardEvent) => {
-      if (e.code !== 'KeyV' || e.repeat) return
-      if (e.ctrlKey || e.metaKey || e.altKey || inField(e.target)) return
+      if (!isPttKey(e, code) || e.repeat || inField(e.target)) return
       e.preventDefault()
       set(true)
     }
     const ku = (e: KeyboardEvent) => {
-      if (e.code === 'KeyV') set(false)
+      if (e.code === code) set(false)
     }
     const blur = () => set(false)
     window.addEventListener('keydown', kd)
@@ -174,7 +162,7 @@ function Ptt() {
       set(false) // never leave the mic latched open
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [code])
 
   return (
     <button
@@ -187,178 +175,13 @@ function Ptt() {
       onPointerUp={() => set(false)}
       onPointerCancel={() => set(false)}
     >
-      HOLD TO TALK
+      HOLD TO TALK · {pttKeyLabel(code)}
     </button>
-  )
-}
-
-function Chips<T extends string>({
-  values,
-  now,
-  onPick,
-}: {
-  values: readonly T[]
-  now: T
-  onPick: (v: T) => void
-}) {
-  return (
-    <div className="v-chips">
-      {values.map((v) => (
-        <button
-          key={v}
-          type="button"
-          className={`chip${v === now ? ' on' : ''}`}
-          onClick={() => onPick(v)}
-        >
-          {v}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-function Config({ v }: { v: VoiceState }) {
-  const [devices, setDevices] = useState<AudioDevices | null>(null)
-  const [touched, setTouched] = useState(false)
-  const [fx, setFx] = useState(v.fx)
-
-  useEffect(() => {
-    apiAudioDevices()
-      .then(setDevices)
-      .catch(() => {})
-  }, [])
-
-  useEffect(() => {
-    setFx(v.fx)
-  }, [v.fx])
-
-  const write = (patch: VoicePrefs) => {
-    setTouched(true)
-    apiVoiceSet(patch).catch(() => {})
-  }
-
-  const devValue = (n: number | null) => (n === null ? '' : String(n))
-  const devPick = (raw: string) => (raw === '' ? null : Number(raw))
-
-  return (
-    <div className="v-config">
-      <div className="v-crow">
-        <span className="v-clabel">VOICE</span>
-        <Chips
-          values={REALTIME_VOICES}
-          now={v.voice as (typeof REALTIME_VOICES)[number]}
-          onPick={(voice) => write({ voice })}
-        />
-      </div>
-      <div className="v-crow">
-        <span className="v-clabel">MODEL</span>
-        <Chips
-          values={REALTIME_MODELS}
-          now={v.model as (typeof REALTIME_MODELS)[number]}
-          onPick={(model) => write({ model })}
-        />
-      </div>
-      <div className="v-crow">
-        <span className="v-clabel">VAD</span>
-        <Chips
-          values={['semantic', 'server'] as const}
-          now={v.vad}
-          onPick={(vad) => write({ vad })}
-        />
-      </div>
-      <div className="v-crow">
-        <span className="v-clabel">DUPLEX</span>
-        <Chips
-          values={['full', 'gate', 'ptt'] as const}
-          now={v.duplex}
-          onPick={(duplex) => write({ duplex })}
-        />
-      </div>
-      <div className="v-crow">
-        <span className="v-clabel">IDENTIFY</span>
-        <Chips
-          values={['on', 'off'] as const}
-          now={v.identify ? 'on' : 'off'}
-          onPick={(x) => write({ identify: x === 'on' })}
-        />
-      </div>
-      <div className="v-crow">
-        <span className="v-clabel">FX</span>
-        <input
-          className="v-slider"
-          type="range"
-          min={0}
-          max={1}
-          step={0.05}
-          value={fx}
-          onChange={(e) => setFx(Number(e.target.value))}
-          onPointerUp={() => write({ fx })}
-          onKeyUp={(e) => {
-            if (SLIDER_KEYS.test(e.key)) write({ fx })
-          }}
-        />
-        <span className="v-cval">{fx.toFixed(2)}</span>
-      </div>
-      <div className="v-crow">
-        <span className="v-clabel">NUDGE</span>
-        <button
-          type="button"
-          className="stepper"
-          disabled={v.nudge <= 0}
-          onClick={() => write({ nudge: Math.max(0, v.nudge - 15) })}
-        >
-          -
-        </button>
-        <button
-          type="button"
-          className="stepper"
-          disabled={v.nudge >= 600}
-          onClick={() => write({ nudge: Math.min(600, v.nudge + 15) })}
-        >
-          +
-        </button>
-        <span className="v-cval">{v.nudge === 0 ? 'OFF' : `${v.nudge}s`}</span>
-      </div>
-      <div className="v-crow">
-        <span className="v-clabel">MIC</span>
-        <select
-          className="v-select"
-          value={devValue(v.input)}
-          onChange={(e) => write({ input: devPick(e.target.value) })}
-        >
-          <option value="">DEFAULT</option>
-          {devices?.input.map((d) => (
-            <option key={d.i} value={d.i}>
-              {d.name}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="v-crow">
-        <span className="v-clabel">SPEAKER</span>
-        <select
-          className="v-select"
-          value={devValue(v.output)}
-          onChange={(e) => write({ output: devPick(e.target.value) })}
-        >
-          <option value="">DEFAULT</option>
-          {devices?.output.map((d) => (
-            <option key={d.i} value={d.i}>
-              {d.name}
-            </option>
-          ))}
-        </select>
-      </div>
-      {touched && v.on && (
-        <div className="v-note">TAKES EFFECT AT THE NEXT SESSION</div>
-      )}
-    </div>
   )
 }
 
 export default function VoicePanel() {
   const voice = useStore((s) => s.voice)
-  const [config, setConfig] = useState(false)
   const [tagging, setTagging] = useState(false)
   const [tag, setTag] = useState('')
   const [liveDuplex, setLiveDuplex] = useState<VoiceDuplex | null>(null)
@@ -479,14 +302,6 @@ export default function VoicePanel() {
         >
           TAG VOICE…
         </button>
-        <button
-          type="button"
-          className={`key${config ? ' active' : ''}`}
-          disabled={!voice}
-          onClick={() => setConfig(!config)}
-        >
-          CONFIG
-        </button>
       </div>
 
       {tagging && on && (
@@ -507,8 +322,6 @@ export default function VoicePanel() {
           />
         </div>
       )}
-
-      {config && voice && <Config v={voice} />}
     </section>
   )
 }

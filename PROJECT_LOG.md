@@ -239,3 +239,100 @@ client-side identity sidecar wrapped around the live agent.
 - RUNBOOK §5b documents the people-teaching workflow. Deps: `pip install torch torchaudio
   speechbrain` (installed in .venv). Without them, or with `--no-id`, the agent runs
   voice-blind exactly as before.
+
+## 2026-08-25 → 08-27 — Session 9 — Poppy Live in the deck · admin page · the visitor's kiosk
+
+**Voice in the deck** (`5d788b9`, spec `web/VOICE.md`): `live_agent.py --deck` speaks an
+`@`-prefixed line protocol over its pipes to a new supervisor, `web/voicelink.py`; moves
+are requested over that pipe and played by the bridge, so the serial bus keeps ONE owner
+and the hologram stays live while he talks. VOICE / PEOPLE tabs, a VOICE key, guided
+enrolment from the page, 30 Hz level frames feeding a voice aura in the hologram — a
+screen-facing corona plus fuzz and syllable rings (a lit shell read as a soap bubble;
+four iterations). Two live defects fixed on the way: recognition silently died in the deck
+because the ECAPA model loaded on a worker thread starved by the session loop (24 s, then
+48 s, then never) — it now loads synchronously before anything starts (5 s, deterministic);
+and a prompt hardening against "here I am, saying hi to your girlfriend" narration.
+
+**Admin page** (`web/admin.py`, `perception/agent_config.py`, VOICE.md §5): password
+gate (salted hash, default `1234`, 8 h tokens, lockout ladder) over one page that edits
+everything the agent is given — instructions, greeting, nudge prompt, tool list with
+descriptions, the seven recognition thresholds, the speech settings — with a preview of
+the exact session payload. Defaults stay byte-identical to the shipped prompt; overrides
+live in `perception/agent_config.json`. Same round closed a real hole: `/ws` and every
+POST were reachable cross-origin from any page (now an explicit Origin rule).
+
+**The kiosk** (`web/kiosk.py`, `web/ui/kiosk.html` + `src/kiosk/`, spec `web/KIOSK.md`):
+the visitor's interface, a SECOND server on :8080 in front of the deck. Twin on the left;
+lab logo + "Poppy" + one status phrase, the conversation as bubbles, and Power / Stand /
+Voice on the right. Light mode, so the hologram module gained a `light` theme (normal
+blending, ink-on-paper palette, no bloom — additive light over white is white); the dark
+deck is number-for-number what it was (screenshot-diffed). The kiosk is a strict allowlist
+proxy (6 routes, bodies re-validated, one upstream socket fanned out to N browsers, its own
+Origin rule), keeps the deck's state from the stream so every browser's hello is race-free,
+and says "Poppy's deck is not running" when it is. Verified with a 27-check proxy suite
+against a fake deck, an 18-agent adversarial review (7 findings, all fixed) and headless
+Chrome screenshots of every state. Drop the lab's logo at `web/ui/public/lab-logo.png`.
+
+## 2026-08-31 — Session 10 — Fair eve (Foire de Châlons): body language · the fair persona · kiosk en français
+
+**Body language** (`10_motion_server.py` + `web/voicelink.py`, CONTRACT.md §1 /
+VOICE.md §2.8): a `Gestures` engine in the motion server — small sinusoid offsets (≤7°,
+moving_speed 25, ≤5 writes/s/motor) around the captured present pose, driven ONLY from
+the main dispatch loop's idle tick so the sway can never overlap play/record/travel;
+writes take the bus gate non-blocking and drop the frame when busy, the base recaptures
+after every suspend, seam motors 41/42/44 only ever get offsets, never absolute values.
+Three silent commands — `talk_on`/`talk_off`/`gesture_idle` — driven by voicelink:
+`@phase` `speaking` sends talk_on at once; leaving it arms a 1.2 s debounced talk_off
+(the phase flaps between sentences, and parking at every flap reads as a stutter); a
+motion-server READY re-asserts talk_on mid-speech; a 1 Hz loop fires the 6 s idle
+gesture after 120 s of quiet, gated on power ready + bus free + nobody talking. New
+pref `gestures` (bool, default true, admin › SPEECH) turns all of it off, at once.
+Stubbed dry-run passed: amplitudes bounded, rate capped, parks after talk_off and the
+one-shot, drops frames on gate contention.
+
+**The fair persona** (`perception/event_context.md`, injected by `live_agent.py`): when
+the file exists it is sent as a system item right after session.updated, BEFORE the
+people roster (UTF-8, capped 6000 chars). Today's content: welcoming host, vous/tu, no
+sarcasm at visitors, the CESI-facts job, safe topics. Delete/rename the file →
+lab-Poppy is back at the next session (RUNBOOK §8). CESI knowledge itself moved into
+the standing prompt (`perception/agent_config.py`, new "CESI — YOUR SCHOOL" section;
+8 024 of the 20 000-char cap) so it survives the event.
+
+**Kiosk en français**: every visitor-facing string on the kiosk page translated
+(`src/kiosk/` Header/Chat/Controls/KioskApp + `link.ts`); the deck stays English.
+RUNBOOK §8 is the fair-day launch order (deck → kiosk → browser on :8080 → Power then
+Voice from the kiosk). `npm run build` and `py_compile` pass on the whole change set.
+
+**Same day, after the first live test** (it worked — the motors are back): three field
+notes applied. The sway was re-built as keyframe GLIDES — each joint picks a target
+around its base every 0.6–2.6 s and travels there in one servo move at a speed sized
+to arrive on time, so the smoothness comes from the servo's own interpolation instead
+of goal-chasing (which read as a buzz); arm amplitudes grew to real gestures (up to
+12° at the left elbow — hands do the talking). The idle stir now fires every **30 s**
+of quiet, not 120. And the prompt gained a SOUND-French bullet (native accent, French
+prosody and fillers) — gpt-realtime follows accent instructions; if cedar still reads
+as American, try `marin` (admin › SPEECH › VOICE), the other new-generation voice.
+
+**Evening round — the fair build, tuned**: talking gesture range roughly doubled
+(elbow ±20°, shoulders ±17°, head ±13°; idle stirs scaled DOWN to 0.45× so quiet
+Poppy stays subtle). A 7-agent web-research sweep (35+ sources: cesi.fr + campus
+subdomains, CTI decisions, HCERES report, L'Étudiant/Figaro 2026, lapprenti) rebuilt
+the CESI knowledge in the prompt — and corrected the PDFs: single brand since 2023
+(the "3 écoles" are merged), 5 domains not 8, 87% apprentices in the engineering
+cycle (was "7 in 10"), tuition €6.5k/8.5k vs apprenticeship at €0 + salary, Reims
+campus specifics (cyber/data-IA majors, URCA partner, robots demoed at the Foire in
+2024), LINEACT as UR 7527. Full sourced sheets in the session scratchpad
+(`cesi_*.md`). Poppy now answers CESI in 2-4 sentences with a question back
+(interactivity bullets: "PULL, do not just answer" + fair-context "WORK the stand");
+idle gesture cadence 30 s. Research raw material kept out of the prompt: only
+verified, speakable facts went in (~12.8k of the 20k-char cap).
+
+**Night fix — the sway retired**: in the field, the continuous sway could fail
+mid-glide and strand the body holding a weird pose. Body language is now ONE
+scripted routine, fully independent of the voice: every 60 s of ready-and-quiet
+body, Poppy looks left, looks right, lifts the hands a touch, and glides back
+EXACTLY onto the stance. It refuses to start if any joint sits >30° off-stance,
+parks back on the stance even when a step errors, and `stop` cuts it straight
+to the glide home. `talk_on`/`talk_off` remain as accepted no-ops; voicelink no
+longer watches the speaking phase at all. GESTURES pref unchanged (admin ›
+SPEECH), cadence 60 s.

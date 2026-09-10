@@ -58,6 +58,24 @@ New commands (available with or without --telemetry):
   seen); temp watchdog stays active during recording (>=52C → abort + release
   + `TEMP_RELEASE …`).
 
+Body-language commands (sent by `web/voicelink.py` — the deck UI never sends
+them):
+- `talk_on` / `talk_off` — accepted and IGNORED (silent no-ops, kept so an
+  older bridge stays compatible). The continuous talking sway was retired:
+  a failure mid-sway could strand the body off-stance.
+- `gesture_idle` → `# gesture` — the only body language left: a scripted
+  ~7 s routine driven from the main dispatch loop's idle tick (never
+  overlaps play/record/travel — those run inline on the same thread).
+  Look left, look right, a small lift of both hands, then a glide back to
+  EXACTLY the stand pose (stance values, seam motors 41/42/44 rebased like
+  travel_begin). One goal write per joint per step, moving_speed sized to
+  the glide (clamped 8–50); refused when any gestured joint sits >30° off
+  the stance; any real command suspends it, `stop` cuts it straight to the
+  glide home; on any error it parks the joints back on the stance before
+  giving up. Sent by voicelink every 60 s of ready-and-quiet body,
+  independent of the voice.
+- While recording all three are ignored silently (no `# unknown command`).
+
 ## 2. REST API (track B, web/server.py)
 JSON in/out. Errors: `{"error":"<human sentence>"}` with 4xx/5xx.
 - `GET  /api/state` → FullState (below).
@@ -137,7 +155,10 @@ export interface Holo {
   resize(): void;
   dispose(): void;
 }
-export function createHolo(canvas: HTMLCanvasElement): Holo;
+export type HoloTheme = 'dark' | 'light';   // 'light' = the kiosk's ink-on-paper (KIOSK.md §2)
+export function createHolo(canvas: HTMLCanvasElement,
+                           opts?: { theme?: HoloTheme;
+                                    keepDeadParts?: boolean }): Holo;   // kiosk: never hide a dead motor's limb
 ```
 Also deliver `web/ui/holo-harness.html` + `src/holo/harness.ts` (a second Vite
 entry) that mounts the module full-screen with keyboard controls: `1/2/3`
@@ -164,10 +185,11 @@ export const CAL: Record<number,{node:string;axis:'x'|'y'|'z';sign:1|-1;offset:n
   51:{node:'rShoulderY',axis:'x',sign:-1,offset:  75.74},
   52:{node:'rShoulderX',axis:'z',sign:-1,offset:  20.70},
   53:{node:'rArmZ',     axis:'y',sign:-1,offset: -77.14},
-  54:{node:'rElbowY',   axis:'x',sign:-1,offset: -90.0},
+  54:{node:'rElbowY',   axis:'x',sign:-1,offset:-129.80},
 };
 ```
-(54 never moves — dead — its marker just exists on the right elbow.)
+(54 was dead for years; replaced 2026-09-09 — offset sampled from a hand-held
+mirror of the left arm, sign still a best guess until seen moving.)
 Node tree: root→absZ→bustY→bustX→(chest)→headZ→headY(head);
 bustX also parents both shoulder chains: lShoulderY→lShoulderX→lArmZ→lElbowY,
 mirrored for r*. Clamp applied angles to ±120° for sanity.

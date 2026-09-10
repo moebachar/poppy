@@ -14,10 +14,33 @@ import type {
 import { EXPECTED_IDS, MOTOR_NAMES } from './types'
 
 export type HoverSource = 'row' | 'holo'
-export type SideTab = 'seq' | 'voice' | 'people'
+export type SideTab = 'seq' | 'voice'
+/** VOICE.md §5.4 — the deck, or the full-window admin page over it. */
+export type Page = 'deck' | 'admin'
 
 /** VOICE.md §2.2 — the bridge keeps this many rows, so we keep the same. */
 const CHAT_MAX = 80
+
+/** VOICE.md §5.2 — the admin token lives in sessionStorage and NOWHERE else:
+ *  a closed tab re-prompts. Never localStorage, never a cookie. */
+const TOKEN_KEY = 'poppy.admin.token'
+
+function readToken(): string | null {
+  try {
+    return sessionStorage.getItem(TOKEN_KEY)
+  } catch {
+    return null // storage refused; the page still works, it just re-prompts
+  }
+}
+
+function writeToken(t: string | null): void {
+  try {
+    if (t === null) sessionStorage.removeItem(TOKEN_KEY)
+    else sessionStorage.setItem(TOKEN_KEY, t)
+  } catch {
+    /* nothing to do — the token stays in memory for this page only */
+  }
+}
 
 export interface DeckState {
   // ---- mirror of FullState ----
@@ -54,6 +77,10 @@ export interface DeckState {
   editingMove: string | null
   /** which panel the side column is showing above TEACH / EVENT LOG */
   sideTab: SideTab
+  /** deck, or the admin page over it (the deck stays mounted underneath) */
+  page: Page
+  /** the admin gate's token, mirrored from sessionStorage */
+  adminToken: string | null
 
   // ---- voice (web/VOICE.md) ----
   voice: VoiceState | null
@@ -75,6 +102,8 @@ export interface DeckState {
   clearAwaken(): void
   setEditingMove(name: string | null): void
   setSideTab(tab: SideTab): void
+  setPage(p: Page): void
+  setAdminToken(t: string | null): void
   setVoice(v: VoiceState | null): void
   setChat(rows: ChatRow[]): void
   pushChat(row: ChatRow): void
@@ -118,6 +147,8 @@ export const useStore = create<DeckState>()((set, get) => ({
   awaitingAwaken: false,
   editingMove: null,
   sideTab: 'seq',
+  page: 'deck',
+  adminToken: readToken(),
 
   voice: null,
   chat: [],
@@ -221,6 +252,17 @@ export const useStore = create<DeckState>()((set, get) => ({
 
   setSideTab(tab) {
     set({ sideTab: tab })
+  },
+
+  setPage(p) {
+    set({ page: p })
+  },
+
+  setAdminToken(t) {
+    writeToken(t)
+    // The roster is gated data (VOICE.md §5.2): losing the token drops it from
+    // memory too, so a closed gate never leaves faces and facts on screen.
+    set(t === null ? { adminToken: null, people: [] } : { adminToken: t })
   },
 
   setVoice(v) {

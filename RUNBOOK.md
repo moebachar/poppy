@@ -194,6 +194,49 @@ keeps per-person memories in `perception\people\` (gitignored — personal data)
 3. Close CoppeliaSim (don't save the scene if it asks).
 4. Unplug the USB2AX.
 
+## 7. The two screens (deck for you, kiosk for visitors)
+
+Two terminals, both from `C:\Users\mbachar\poppy`. Plug the USB2AX in and power the
+12 V bus first only if you want the body; both screens run without it.
+
+```
+.venv\Scripts\python.exe web\server.py      # the deck  → http://127.0.0.1:8000  (admin page password 1234)
+.venv\Scripts\python.exe web\kiosk.py       # the kiosk → http://127.0.0.1:8080
+```
+
+- The kiosk needs the deck: with the deck down it shows "Poppy's deck is not running"
+  and greys its buttons, then catches up by itself when the deck comes back.
+- Kiosk on a tablet on the lab network: `web\kiosk.py --host 0.0.0.0`, then open
+  `http://<this laptop's IP>:8080` on the tablet. Anyone on that network can then power
+  the robot and start a (paid) voice session — that is the whole interface.
+- Lab logo: drop `lab-logo.png` (or `.svg`) in `web\ui\public\` — no rebuild needed.
+- After editing anything under `web\ui\src`: `cd web\ui && npm run build`, then reload.
+  Contracts: `web\CONTRACT.md` (deck), `web\VOICE.md` (voice + admin), `web\KIOSK.md`.
+- Ctrl+C in each window stops it (the deck powers the robot off and ends any voice
+  session on the way out).
+
+## 8. FAIR DAY (Foire de Châlons)
+
+Everything from `C:\Users\mbachar\poppy`, in this order:
+
+1. Deck: `.venv\Scripts\python.exe web\server.py` (→ http://127.0.0.1:8000,
+   admin password 1234).
+2. Kiosk: `.venv\Scripts\python.exe web\kiosk.py`.
+3. Browser on the kiosk port: `http://127.0.0.1:8080` — the visitor page,
+   in French.
+4. On the kiosk: **Marche** first (wait for the status to leave
+   « Il se réveille… »), then **Voix**.
+
+Once powered, Poppy stirs on his own about once a minute — a look left and
+right, a small lift of the hands, then a glide back to the stand pose. It is
+independent of the voice, yields to any real move or recording, and can be
+turned off on the deck's admin page → SPEECH → GESTURES (applies at once).
+
+`perception\event_context.md` IS the fair persona: welcoming-host mode,
+vous/tu, no sarcasm at visitors, the CESI-facts job, the safe-topics rule.
+**Delete or rename that file after the event** to get lab-Poppy back — it
+takes effect at the next voice session.
+
 ## Known quirks (this 2013 unit)
 
 - `r_elbow_y` (motor 54) is dead — sim moves may use it; hardware skips it.

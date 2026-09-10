@@ -30,10 +30,19 @@ VADS = ("semantic", "server")
 DUPLEXES = ("full", "gate", "ptt")
 PHASES = ("connecting", "listening", "hearing", "thinking", "speaking")
 PREF_KEYS = ("voice", "model", "vad", "fx", "nudge", "duplex", "identify",
-             "input", "output")
+             "input", "output", "ptt_key", "gestures")
 DEFAULTS = {"voice": "cedar", "model": "gpt-realtime-2.1", "vad": "semantic",
             "fx": 0.25, "nudge": 0, "duplex": "full", "identify": True,
-            "input": None, "output": None}
+            "input": None, "output": None, "ptt_key": "KeyV",
+            "gestures": True}
+# The push-to-talk key, as a browser KeyboardEvent.code — the physical key,
+# so an AZERTY laptop and a QWERTY tablet agree. Space is STOP on the deck and
+# Escape/Tab belong to the browser, so they are not offered.
+PTT_KEY_RE = re.compile(
+    r"^(Key[A-Z]|Digit[0-9]|F([1-9]|1[0-2])|(Shift|Control|Alt)(Left|Right)"
+    r"|Enter|NumpadEnter|Numpad[0-9]|Backquote|Backslash|Slash|Period|Comma"
+    r"|Semicolon|Quote|BracketLeft|BracketRight|Minus|Equal|CapsLock|Insert"
+    r"|Home|End|PageUp|PageDown)$")
 
 CHAT_MAX = 80
 # @quit -> @bye. The child's shutdown ends with identity.extract_facts, which
@@ -48,6 +57,7 @@ PLAY_TIMEOUT = 60            # the move itself, travel back to the stance
 # 0.2 s / 0.25 s poll overshoot ~= 85.5 s. That MUST stay under DeckMotion's
 # 90 s ceiling in perception/live_agent.py: the bridge always answers first, so
 # the agent's timeout only ever fires when the deck itself has gone away.
+IDLE_GESTURE_EVERY = 60.0    # ready-and-quiet time between idle routines
 BAD_LINE_QUIET = 5           # seconds between "could not parse" complaints
 LOAD_TIMEOUT = 240           # enrolment stuck 'loading': torch + an 80 MB pull
 RECORD_STALE = 40            # enrolment stuck 'recording': 8 s of mic + slack
@@ -74,6 +84,7 @@ _PEOPLE_LOCK = threading.Lock()     # one writer at a time in perception/people
 # a few statements at a time and NEVER while a server function is called, so it
 # can never invert against server.STATE_LOCK — voicelink takes no server lock.
 _BUS_LOCK = threading.Lock()
+_GESTURE_LOCK = threading.Lock()    # guards _IDLE — never held across a call
 
 _STATE = {"on": False, "phase": "off", "error": None, "started": None,
           "people": None, "moves": None, "resp": None}
@@ -87,6 +98,7 @@ _CHAT = deque(maxlen=CHAT_MAX)
 _ROW_N = 0
 _BAD = {"n": 0, "at": 0.0}   # malformed child lines: counted, rarely spoken
 _BUS = None                  # the play that owns the motion bus right now
+_IDLE = {"t": time.time()}   # when the idle-gesture clock last reset
 _LIVE_DUPLEX = None          # what the RUNNING child was launched with
 _ENROLL = None               # guided-enrolment session, as sent to the deck
 _ENROLL_AT = 0.0             # when its current status began — staleness clock
@@ -115,6 +127,7 @@ def wire(broadcast, send_motion, power, python, root):
     _python = python
     ROOT = Path(root)
     _load_prefs()
+    threading.Thread(target=_gesture_loop, daemon=True).start()
 
 
 # ------------------------------------------------------------------ helpers --
@@ -203,6 +216,28 @@ def _identity():
     return _IDENT
 
 
+def _tentative():
+    """identity's 'tentative' gate as the ADMIN PAGE currently has it tuned.
+
+    The AGENT applies agent_config's recognition block at startup
+    (identity.apply_tuning); this process never does, so reading
+    ident.T_TENTATIVE straight would judge an enrolment against the code
+    default while Poppy judges those same voices against the tuned number —
+    one setting, two values, and the enrolment hint is the one that lies.
+    agent_config is stdlib-only precisely so the bridge can afford this.
+    """
+    try:
+        path = str(ROOT / "perception")
+        if path not in sys.path:
+            sys.path.insert(0, path)
+        import agent_config
+        return float(agent_config.load()["recognition"]["tentative"])
+    except Exception:
+        # a broken config file is never fatal here either: the agent falls
+        # back to the same default, so the two still agree
+        return float(_identity().T_TENTATIVE)
+
+
 def _unit(v):
     """A level clamped to 0..1. Anything else is 0.0.
 
@@ -277,6 +312,14 @@ def _validate_prefs(body):
         elif k == "identify":
             if not isinstance(v, bool):
                 raise VoiceError(400, "identify must be true or false")
+        elif k == "gestures":
+            if not isinstance(v, bool):
+                raise VoiceError(400, "gestures must be true or false")
+        elif k == "ptt_key":
+            if not isinstance(v, str) or not PTT_KEY_RE.match(v):
+                raise VoiceError(400, 'ptt_key must be a key code such as '
+                                      '"KeyV", "ShiftRight" or "F9" — not '
+                                      'Space (that is STOP), Escape or Tab')
         elif v is not None:              # input / output: a device index
             if isinstance(v, bool) or not isinstance(v, int) or v < 0:
                 raise VoiceError(400, f"{k} must be null or a device index")
@@ -305,14 +348,74 @@ def _load_prefs():
         _PREFS = prefs
 
 
+def prefs():
+    """admin.py: the session parameters, as the admin page's 'params' block."""
+    with _LOCK:
+        return dict(_PREFS)
+
+
+def set_prefs(patch):
+    """admin.py: persist the speech settings — the ONLY way in.
+
+    This is the gated door: set_voice() starts and stops the session and
+    refuses every preference key, so there is one place these are written and
+    it is behind the password. Nothing here can start a session by accident
+    either. Unknown keys are refused rather than dropped — silently doing
+    nothing is the worst answer a settings page can give.
+    """
+    if not isinstance(patch, dict):
+        raise VoiceError(400, "params must be an object")
+    unknown = sorted(k for k in patch if k not in PREF_KEYS)
+    if unknown:
+        raise VoiceError(400, "unknown speech setting " + ", ".join(unknown))
+    clean = _validate_prefs(patch)
+    if clean:
+        with _LOCK:
+            _PREFS.update(clean)
+        _save_prefs()
+        _push_voice()
+    return prefs()
+
+
+def push_voice():
+    """admin.py: a config edit changed what the NEXT session will send."""
+    _push_voice()
+
+
+def identity_module():
+    """admin.py: perception/identity.py, for the preview's roster."""
+    return _identity()
+
+
 def _save_prefs():
+    """Publish web/voice_prefs.json atomically, never over the live file.
+
+    write_text() truncates before it writes, so a kill (or a full disk) in the
+    middle left half a file — and _load_prefs falls back to the default PER
+    KEY, so the operator's device indexes and duplex mode came back reset with
+    nothing said. Unique temp + os.replace, like agent_config._write and
+    identity._save: the file on disk is either the old one or the new one.
+    """
     with _LOCK:
         doc = dict(_PREFS)
+    tmp = PREFS_PATH.with_name(f"{PREFS_PATH.name}.{os.getpid()}-"
+                               f"{threading.get_ident()}.tmp")
     try:
-        PREFS_PATH.write_text(json.dumps(doc, indent=1, ensure_ascii=False),
-                              encoding="utf-8")
-    except OSError as e:
-        _event(f"[voice] could not save the preferences: {e}")
+        tmp.write_text(json.dumps(doc, indent=1, ensure_ascii=False),
+                       encoding="utf-8")
+        json.loads(tmp.read_text(encoding="utf-8"))   # a short write is not a
+        for i in range(4):                            # settings file
+            try:
+                os.replace(tmp, PREFS_PATH)
+                break
+            except PermissionError:
+                # Windows refuses to replace a file somebody merely has open
+                if i == 3:
+                    raise
+                time.sleep(0.02 * (i + 1))
+    except Exception as e:
+        tmp.unlink(missing_ok=True)       # no stray temp file left behind
+        _event(f"[voice] could not save the preferences: {_short(e)}")
 
 
 # ------------------------------------------------------------------- state ---
@@ -328,7 +431,9 @@ def voice_state():
             "voice": prefs["voice"], "model": prefs["model"],
             "vad": prefs["vad"], "fx": prefs["fx"], "nudge": prefs["nudge"],
             "duplex": prefs["duplex"], "identify": prefs["identify"],
+            "gestures": prefs["gestures"],
             "input": prefs["input"], "output": prefs["output"],
+            "ptt_key": prefs["ptt_key"],
             "people": st["people"] if st["people"] is not None
             else _count_people(),
             "moves": st["moves"] if st["moves"] is not None else _count_moves(),
@@ -623,6 +728,10 @@ def on_motion_exit():
 def on_motion_event(word, line):
     """Every non-telemetry motion-server line, from server.handle_event."""
     global _BUS
+    if word == "READY":
+        with _GESTURE_LOCK:               # a fresh body earns a full quiet
+            _IDLE["t"] = time.time()      # period before its first stir
+        return
     if word not in ("PLAY_DONE", "PLAY_FAIL"):
         return
     parts = line.split(None, 2)
@@ -641,6 +750,45 @@ def on_motion_event(word, line):
         claim["done"].set()
         if claim["who"] == "deck":        # nobody is waiting to release it
             _BUS = None
+
+
+# ---- body language: the idle stir ------------------------------------------
+# The motion server does the moving (Gestures in 10_motion_server.py); this
+# side only decides WHEN: one gesture_idle per IDLE_GESTURE_EVERY of ready-
+# and-quiet body. Independent of the voice — he stirs whether or not anyone
+# is talking. (The continuous talking sway was retired: web/VOICE.md §2.8.)
+def _gestures_on():
+    with _LOCK:
+        return bool(_PREFS.get("gestures", True))
+
+
+def _gesture_loop():
+    """1 Hz heartbeat (daemon, started by wire): every IDLE_GESTURE_EVERY
+    with the body powered, ready and unclaimed, ask for the small idle
+    routine — a look left and right, a touch of the hands, back to the
+    stance."""
+    while True:
+        time.sleep(1.0)
+        now = time.time()
+        if not _gestures_on():
+            continue
+        if (_power() if _power else "off") != "ready":
+            with _GESTURE_LOCK:           # a busy or dark body resets the
+                _IDLE["t"] = now          # quiet clock
+            continue
+        with _GESTURE_LOCK:
+            if now - _IDLE["t"] < IDLE_GESTURE_EVERY:
+                continue
+        with _BUS_LOCK:
+            if _BUS is not None:
+                continue                  # a play owns the body right now
+        with _ENROLL_LOCK:
+            if _ENROLL is not None:
+                continue                  # an enrolment clip may be rolling:
+                                          # servo noise would end up in it
+        with _GESTURE_LOCK:
+            _IDLE["t"] = now
+        _motion("gesture_idle")
 
 
 def _wait_ready(proc, seconds):
@@ -836,23 +984,29 @@ def stop():
 
 # ------------------------------------------------------------------- REST ----
 def set_voice(body):
-    """POST /api/voice — persist the preferences, then start or stop."""
+    """POST /api/voice — start or stop the session, and nothing else.
+
+    The session itself is the deck's VOICE key, which sits in front of the
+    password: it stays open. The speech PREFERENCES are the admin page's
+    SPEECH block, and this route used to write exactly the same keys the
+    gated POST /api/admin/config writes — one setting behind two doors, one
+    of them unlocked. There is one door now, and it is the gated one.
+    """
     on = body.get("on")
     if on is not None and not isinstance(on, bool):
         raise VoiceError(400, 'the "on" field must be true or false')
-    if on is True and _alive():
+    settings = sorted(k for k in body if k in PREF_KEYS)
+    if settings:
+        raise VoiceError(400, "the speech settings (" + ", ".join(settings) +
+                              ") are changed on the admin page, under SPEECH")
+    if on is None:
+        raise VoiceError(400, 'body must be {"on": true} or {"on": false}')
+    if on and _alive():
         raise VoiceError(409, "a voice session is already running")
-    prefs = _validate_prefs(body)
-    if prefs:
-        with _LOCK:
-            _PREFS.update(prefs)
-        _save_prefs()
-    if on is True:
+    if on:
         start()
-    elif on is False:
+    else:
         stop()
-    elif prefs:
-        _push_voice()                     # config-only write: echo it back
     return voice_state()
 
 
@@ -1262,7 +1416,7 @@ def enroll_finish():
         _enroll_back(gen, why)            # still recordable: he can retry
         raise VoiceError(500, why)
     note = f"saved — self-consistency {min(sims):.2f}..{max(sims):.2f}"
-    if min(sims) < ident.T_TENTATIVE:
+    if min(sims) < _tentative():
         note += " (the clips disagree — worth redoing)"
     with _ENROLL_LOCK:
         _SAVING = False
