@@ -11,4 +11,5 @@ start:
 first-launch:
 	python3 -m venv ${root}/venv
 	cd $(root)/web/ui && npm install
+	bash -c "source $(root)/venv/bin/activate && pip install -r requirements.txt"
 	$(MAKE) start
